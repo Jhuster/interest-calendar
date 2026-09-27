@@ -1,0 +1,44 @@
+{
+  "protocol_version": "1.0",
+  "batch_id": "0e30d95b-d348-43d8-aeea-d50e9b8c67e1",
+  "state_epoch": "7a824bda-e591-48d8-a3d9-d92ab39cc281",
+  "config_version": 1,
+  "collection_started_at": "2026-09-27T09:00:00+08:00",
+  "generated_at": "2026-09-27T10:00:00+08:00",
+  "window": {
+    "start_date": "2026-09-27",
+    "end_date": "2026-10-04"
+  },
+  "result": "complete",
+  "warnings": [],
+  "events": [
+    {
+      "event_id": "9625f205-44d0-43d5-a6c0-5ce60f32c662",
+      "base_version": 1,
+      "source_key": {
+        "namespace": "example.org",
+        "id": "demo-session-001"
+      },
+      "interest_ids": [
+        "d096a9c4-59ae-41c4-958d-f66b11945e2e"
+      ],
+      "title": "测试展览（虚构）",
+      "location": "测试场馆",
+      "status": "confirmed",
+      "timing": {
+        "kind": "timed",
+        "start": "2026-10-03T19:00:00+08:00",
+        "end": null
+      },
+      "evidence": [
+        {
+          "url": "https://example.org/events/demo-session-001",
+          "excerpt": "协议测试：活动日期为10月3日。",
+          "source_timezone": "Asia/Shanghai",
+          "verified_at": "2026-09-27T09:55:00+08:00"
+        }
+      ]
+    }
+  ],
+  "candidates": []
+}

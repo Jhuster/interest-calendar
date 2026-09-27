@@ -1,0 +1,11 @@
+[project]
+name = "interest-calendar"
+version = "0.1.0"
+description = "Local-first interest calendar with a replaceable Agent"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "jinja2>=3.1,<4", "jsonschema[format]>=4.23,<5", "icalendar>=6,<8", "pydantic>=2,<3"]
+[dependency-groups]
+dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ics>=0.7,<0.8"]
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,27 @@
+{
+  "request_id": "req-retry-example",
+  "batch_id": "57d3054e-725c-44f3-9561-399b72df24da",
+  "import_status": "imported",
+  "publication_status": "published",
+  "target_revision": 1,
+  "published_revision": 1,
+  "counts": {
+    "created": 1,
+    "updated": 0,
+    "unchanged": 0,
+    "candidates": 0
+  },
+  "event_mappings": [
+    {
+      "source_key": {
+        "namespace": "example.org",
+        "id": "demo-session-001"
+      },
+      "event_id": "9625f205-44d0-43d5-a6c0-5ce60f32c662",
+      "version": 1
+    }
+  ],
+  "candidate_mappings": [],
+  "errors": [],
+  "state_epoch": "7a824bda-e591-48d8-a3d9-d92ab39cc281"
+}

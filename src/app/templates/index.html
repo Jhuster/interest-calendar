@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf }}"><title>兴趣日历 · 把期待放进日常</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/agent-settings.css"><script src="/static/app.js" defer></script></head>
+<body data-page="{{ page }}"><header><a class="brand" href="/"><span class="brand-icon">日</span>兴趣日历</a><nav aria-label="主导航"><a href="/" {% if page == '/' %}aria-current="page"{% endif %}>日程</a><a href="/interests" {% if page == '/interests' %}aria-current="page"{% endif %}>兴趣</a><a href="/settings" {% if page == '/settings' %}aria-current="page"{% endif %}>设置</a></nav><span class="header-note">为值得期待的事留个位置</span></header>
+<main id="main"><div id="message" role="status" aria-live="polite" hidden></div>
+{% if page == '/login' %}
+<section class="login panel"><div class="eyebrow">你的下一份期待</div><h1>欢迎回来</h1><p class="muted">登录后管理兴趣与日程。</p><form id="login-form"><label for="token">管理令牌</label><input id="token" name="token" type="password" autocomplete="current-password" required><button type="submit">进入兴趣日历</button></form><p class="small muted">使用本机初始化时生成的管理员令牌。</p></section>
+{% else %}
+{% if page == '/' %}
+<div class="page-heading"><div><div class="eyebrow" id="today-label">生活里的期待</div><h1>接下来，值得期待</h1><p class="muted">把你关注的事，安排进日常。</p></div><a class="button secondary" href="/settings#subscribe">订阅到手机 ↗</a></div>
+<div class="summary-strip"><span id="count-label">正在读取日程…</span><span id="publication-label"></span><a id="candidate-link" href="/candidates">待核验</a></div>
+<section class="panel schedule"><div class="toolbar"><div class="segmented" aria-label="日程视图"><button id="list-view" class="active" aria-pressed="true">近期列表</button><button id="month-view" aria-pressed="false">月历</button></div><label class="filter">关注范围<select id="interest-filter"><option value="">全部兴趣</option></select></label><div id="month-controls" hidden><button id="previous-month" aria-label="上个月">‹</button><strong id="month-label"></strong><button id="next-month" aria-label="下个月">›</button></div></div><div id="schedule-content" aria-live="polite"></div></section>
+{% elif page == '/interests' %}
+<div class="page-heading"><div><div class="eyebrow">从喜欢的事开始</div><h1>我的兴趣</h1><p class="muted">告诉日历你关心什么，下一次采集会使用最新设置。</p></div></div>
+<div class="interest-layout"><section class="panel"><h2>添加一份期待</h2><form id="interest-form"><label for="keyword">关注什么 <span class="muted">必填</span></label><input id="keyword" maxlength="200" placeholder="例如：网球赛事、艺术展览" required><label for="conditions">补充条件</label><textarea id="conditions" maxlength="2000" rows="4" placeholder="例如：只关注上海，优先周末"></textarea><button type="submit">＋ 添加兴趣</button></form></section><section id="interest-content" aria-live="polite"></section></div>
+{% elif page == '/settings' %}
+<div class="page-heading"><div><div class="eyebrow">连接你的日常</div><h1>设置</h1></div><button id="logout" class="secondary">退出登录</button></div>
+<section class="panel" id="subscribe"><div class="section-number">01 / 订阅</div><h2>一份日历，持续更新</h2><p>在手机中订阅一次，之后增添兴趣无需重新订阅。</p><label for="subscribe-url">日历订阅地址</label><div class="copy-row"><input id="subscribe-url" readonly><button id="copy-subscribe">复制地址</button></div><p id="deployment-note" class="small muted"></p><ol class="steps"><li>打开“日历”，进入“日历”列表，选择“添加日历”→“添加订阅日历”。</li><li>粘贴上方地址，完成订阅。更新由手机日历自行获取。</li></ol><p id="publish-detail" class="muted"></p></section>
+<section class="panel" id="agent">
+  <h2>连接你的 Agent</h2>
+  <p id="agent-copy-help" class="muted">复制下方说明，发送给你的 Agent 即可开始接入。</p>
+    <div class="agent-copy-header">
+      <span id="agent-prompt-label">接入说明</span>
+      <button id="copy-agent" type="button" aria-live="polite">复制内容</button>
+    </div>
+  <div class="agent-copy-card">
+    <div id="agent-prompt" tabindex="0" aria-labelledby="agent-prompt-label" aria-describedby="agent-copy-help"></div>
+  </div>
+  <div class="agent-copy-footer">
+    <a class="small" href="/api/v1/agent/guide" target="_blank" rel="noopener">查看完整接入指引 ↗</a>
+    <p id="receive-detail" class="small muted"></p>
+  </div>
+  <label for="agent-server-address">服务器地址</label>
+  <input id="agent-server-address" type="text" readonly autocomplete="off">
+  <label for="agent-token">Agent 令牌</label>
+  <div class="copy-row">
+    <input id="agent-token" type="text" value="加载中…" readonly autocomplete="off" aria-describedby="agent-token-help">
+    <button id="copy-agent-token" type="button" aria-live="polite">复制令牌</button>
+  </div>
+  <p id="agent-token-help" class="small muted">Agent 首次接入会向你询问令牌。选中上方令牌，复制并发送给你的 Agent 即可。</p>
+</section>
+<section class="panel"><div class="section-number">03 / 运行</div><h2>更新记录</h2><p id="version-detail"></p><a class="button secondary" href="/runs">查看运行记录</a><button id="retry-publish" class="secondary">重试日历发布</button></section>
+<section class="panel danger-panel"><div class="section-number">04 / 数据维护</div><h2>删除和重置</h2><p class="muted">仅管理员可操作。清空日历会保留兴趣配置；恢复初始状态会同时删除兴趣配置。操作不可撤销。</p><div class="actions"><button id="reset-calendar" class="secondary">清空日历数据</button><button id="reset-all" class="danger-button">恢复初始状态</button></div></section>
+{% elif page == '/candidates' %}
+<div class="page-heading"><div><a href="/" class="muted">← 返回日程</a><h1>待核验的日程</h1><p class="muted">确认来源与时间后再发布；未处理的候选不会自动改变订阅。</p></div></div><div id="candidates-content"></div>
+{% elif page == '/runs' %}
+<div class="page-heading"><div><a href="/settings" class="muted">← 返回设置</a><h1>运行记录</h1><p class="muted">这里显示网站实际收到的结果，不代表手机已展示更新。</p></div><button id="refresh-runs" class="secondary">刷新记录</button></div><div id="runs-content"></div>
+{% endif %}
+<footer><span>兴趣日历</span><span>北京时间 · 来源可追溯 · 期待不遗漏</span></footer>
+{% endif %}
+</main><dialog id="detail"><button id="close-detail" class="secondary close" aria-label="关闭详情">关闭 ×</button><div id="detail-content"></div></dialog></body></html>

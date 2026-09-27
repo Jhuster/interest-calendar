@@ -1,0 +1,16 @@
+{
+  "protocol_version": "1.0",
+  "batch_id": "e13a554e-a170-47a2-b7e6-023f454976be",
+  "state_epoch": "7a824bda-e591-48d8-a3d9-d92ab39cc281",
+  "config_version": 1,
+  "collection_started_at": "2026-09-27T09:00:00+08:00",
+  "generated_at": "2026-09-27T10:00:00+08:00",
+  "window": {
+    "start_date": "2026-09-27",
+    "end_date": "2026-10-04"
+  },
+  "result": "empty",
+  "warnings": [],
+  "events": [],
+  "candidates": []
+}

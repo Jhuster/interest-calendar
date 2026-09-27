@@ -1,0 +1,38 @@
+{
+  "protocol_version": "1.0",
+  "batch_id": "ea87ed56-6523-4874-95cc-43a919b91509",
+  "state_epoch": "7a824bda-e591-48d8-a3d9-d92ab39cc281",
+  "config_version": 1,
+  "collection_started_at": "2026-09-27T09:00:00+08:00",
+  "generated_at": "2026-09-27T10:00:00+08:00",
+  "window": {
+    "start_date": "2026-09-27",
+    "end_date": "2026-10-04"
+  },
+  "result": "complete",
+  "warnings": [],
+  "events": [],
+  "candidates": [
+    {
+      "client_candidate_id": "example-org-postponed-001",
+      "base_candidate_version": 0,
+      "related_event_id": "9625f205-44d0-43d5-a6c0-5ce60f32c662",
+      "base_version": 1,
+      "title": "明确延期的测试活动",
+      "interest_ids": [
+        "d096a9c4-59ae-41c4-958d-f66b11945e2e"
+      ],
+      "reason": "postponed",
+      "proposed_event": null,
+      "evidence": [
+        {
+          "url": "https://example.org/events/demo-session-001",
+          "excerpt": "协议测试：原定10月3日活动延期，新日期另行公告。",
+          "source_timezone": "Asia/Shanghai",
+          "verified_at": "2026-09-27T09:55:00+08:00"
+        }
+      ],
+      "notes": "虚构测试：来源已明确延期，新日期待定。人工核验后可撤下旧条目，不能标为取消。"
+    }
+  ]
+}

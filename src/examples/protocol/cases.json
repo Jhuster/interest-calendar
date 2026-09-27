@@ -1,0 +1,68 @@
+[
+  {
+    "file": "valid-create.json",
+    "schema_valid": true,
+    "semantic_valid": true,
+    "expectation": "新事件；测试库须预置该epoch/config和兴趣ID，时钟固定2026-09-27T10:05:00+08:00。"
+  },
+  {
+    "file": "valid-update.json",
+    "schema_valid": true,
+    "semantic_valid": true,
+    "expectation": "预置同来源事件version=1；补全时间须保留UID、增加SEQUENCE。"
+  },
+  {
+    "file": "valid-empty.json",
+    "schema_valid": true,
+    "semantic_valid": true,
+    "expectation": "不删除已有事件，publication_status=not_required。"
+  },
+  {
+    "file": "valid-candidate.json",
+    "schema_valid": true,
+    "semantic_valid": true,
+    "expectation": "候选入库但不进入ICS。"
+  },
+  {
+    "file": "valid-midnight.json",
+    "schema_valid": true,
+    "semantic_valid": true,
+    "expectation": "测试时钟改为2026-09-28T00:15:00+08:00，窗口仍以9月27日开始；不能强制改为9月28日。"
+  },
+  {
+    "file": "invalid-unknown-field.json",
+    "schema_valid": false,
+    "semantic_valid": false,
+    "expectation": "SCHEMA_INVALID /unexpected，整批拒绝。"
+  },
+  {
+    "file": "invalid-time-order.json",
+    "schema_valid": true,
+    "semantic_valid": false,
+    "expectation": "结构合法，但服务端须返回TIME_INVALID /events/0/timing/end，零事件写入。"
+  },
+  {
+    "file": "invalid-empty-with-event.json",
+    "schema_valid": false,
+    "semantic_valid": false,
+    "expectation": "empty不能包含事件。"
+  },
+  {
+    "file": "invalid-update-version.json",
+    "schema_valid": false,
+    "semantic_valid": false,
+    "expectation": "已知事件不能用base_version=0更新。"
+  },
+  {
+    "file": "invalid-state-epoch.json",
+    "schema_valid": true,
+    "semantic_valid": false,
+    "expectation": "结构合法，测试库epoch为valid-create中的值时返回STATE_RESET。"
+  },
+  {
+    "file": "valid-postponed-candidate.json",
+    "schema_valid": true,
+    "semantic_valid": true,
+    "expectation": "预置同来源事件version=1；创建候选，不自动取消；人工withdraw后撤下旧条目并保留UID。"
+  }
+]

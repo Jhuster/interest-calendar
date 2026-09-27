@@ -1,0 +1,31 @@
+{
+  "protocol_version": "1.0",
+  "batch_id": "4b624e6c-fd9b-4217-9b6b-c1c474fa7c06",
+  "state_epoch": "7a824bda-e591-48d8-a3d9-d92ab39cc281",
+  "config_version": 1,
+  "collection_started_at": "2026-09-27T09:00:00+08:00",
+  "generated_at": "2026-09-27T10:00:00+08:00",
+  "window": {
+    "start_date": "2026-09-27",
+    "end_date": "2026-10-04"
+  },
+  "result": "complete",
+  "warnings": [],
+  "events": [],
+  "candidates": [
+    {
+      "client_candidate_id": "example-org-date-unknown-001",
+      "base_candidate_version": 0,
+      "related_event_id": null,
+      "base_version": null,
+      "title": "日期待核验的测试活动",
+      "interest_ids": [
+        "d096a9c4-59ae-41c4-958d-f66b11945e2e"
+      ],
+      "reason": "uncertain_date",
+      "proposed_event": null,
+      "evidence": [],
+      "notes": "虚构测试：来源只写下月，无法确定日期，不能发布。"
+    }
+  ]
+}

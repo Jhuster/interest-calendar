@@ -1,0 +1,12 @@
+.agent-copy-card { background: #f4f7fc; border: 1px solid #e3eaf5; border-radius: 12px; padding: 20px 24px 24px; }
+.agent-copy-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; color: #53647e; font-size: 14px; font-weight: 600; }
+.agent-copy-header button { font-size: 16px; padding: 10px 18px; }
+#agent-prompt { line-height: 1.9; color: #354863; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+#agent-prompt:focus-visible { outline: 3px solid #88a7ff; outline-offset: 5px; }
+.agent-copy-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 24px; margin-top: 16px; }
+.agent-copy-footer p { margin: 0; }
+.agent-copy-footer a { display: inline-flex; align-items: center; min-height: 44px; }
+@media (max-width: 680px) { .agent-copy-card { padding: 16px; } .agent-copy-footer { align-items: flex-start; flex-direction: column; } }
+
+/* Copy actions are temporarily hidden while the LAN/HTTPS flow is being settled. */
+#copy-subscribe, #copy-agent, #copy-agent-token { display: none; }

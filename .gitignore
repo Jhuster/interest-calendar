@@ -1,0 +1,16 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+bin/data/
+backups/
+certs/
+.env
+*.log
+src/.pytest_cache/
+
+bin/runtime/
+
+.playwright-cli/
+output/

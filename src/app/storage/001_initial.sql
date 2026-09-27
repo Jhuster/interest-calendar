@@ -1,0 +1,11 @@
+CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK(id=1), state_epoch TEXT NOT NULL, config_version INTEGER NOT NULL DEFAULT 1, data_revision INTEGER NOT NULL DEFAULT 0, active_publication_id TEXT, schema_version INTEGER NOT NULL DEFAULT 1, publish_error TEXT);
+CREATE TABLE interests (id TEXT PRIMARY KEY, keyword TEXT NOT NULL, conditions TEXT NOT NULL, normalized_key TEXT NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT);
+CREATE UNIQUE INDEX active_interest ON interests(normalized_key) WHERE deleted_at IS NULL;
+CREATE TABLE events (id TEXT PRIMARY KEY, uid TEXT UNIQUE NOT NULL, version INTEGER NOT NULL, sequence INTEGER NOT NULL, payload_json TEXT NOT NULL, calendar_visible INTEGER NOT NULL, withdrawal_reason TEXT, ics_modified_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE event_sources (source_namespace TEXT NOT NULL, source_id TEXT NOT NULL, event_id TEXT NOT NULL REFERENCES events(id), source_url TEXT NOT NULL, PRIMARY KEY(source_namespace,source_id));
+CREATE TABLE event_interests (event_id TEXT REFERENCES events(id), interest_id TEXT REFERENCES interests(id), linked_at TEXT NOT NULL, unlinked_at TEXT, PRIMARY KEY(event_id,interest_id));
+CREATE TABLE event_versions (event_id TEXT REFERENCES events(id), version INTEGER NOT NULL, payload_json TEXT NOT NULL, reason TEXT NOT NULL, batch_id TEXT, PRIMARY KEY(event_id,version));
+CREATE TABLE candidates (id TEXT PRIMARY KEY, client_candidate_id TEXT UNIQUE NOT NULL, version INTEGER NOT NULL, payload_json TEXT NOT NULL, state TEXT NOT NULL, resolved_at TEXT, resolution TEXT, resolved_event_id TEXT);
+CREATE TABLE batches (batch_id TEXT PRIMARY KEY, state_epoch TEXT NOT NULL, payload_hash TEXT NOT NULL, config_version INTEGER, status INTEGER NOT NULL, target_revision INTEGER, receipt_json TEXT NOT NULL, received_at TEXT NOT NULL);
+CREATE TABLE publications (id TEXT PRIMARY KEY, data_revision INTEGER NOT NULL, ics_blob BLOB NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE audit_log (id INTEGER PRIMARY KEY, operation TEXT, object_id TEXT, created_at TEXT, result TEXT, request_id TEXT);
