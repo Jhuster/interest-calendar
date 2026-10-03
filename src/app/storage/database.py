@@ -26,7 +26,10 @@ class Store:
             if version==2:
                 _migrate_v2_to_v3(db)
                 version=3
-            if version!=3:
+            if version==3:
+                _migrate_v3_to_v4(db)
+                version=4
+            if version!=4:
                 raise RuntimeError('Unsupported database version')
             _sync_public_calendar(db, calendar_token)
         finally:
@@ -92,6 +95,18 @@ def _migrate_v2_to_v3(db):
         if 'login_token' not in columns:
             db.execute('ALTER TABLE accounts ADD COLUMN login_token TEXT')
         db.execute('PRAGMA user_version=3')
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK')
+        raise
+
+def _migrate_v3_to_v4(db):
+    db.execute('BEGIN')
+    try:
+        columns=[row[1] for row in db.execute('PRAGMA table_info(accounts)')]
+        if 'login_token' in columns:
+            db.execute('ALTER TABLE accounts DROP COLUMN login_token')
+        db.execute('PRAGMA user_version=4')
         db.execute('COMMIT')
     except BaseException:
         db.execute('ROLLBACK')

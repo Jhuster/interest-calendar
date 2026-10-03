@@ -662,37 +662,36 @@ def test_admin_edits_public_interests(site):
     assert c.delete('/api/v1/session').status_code==200
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开账户兴趣'}
 
-def test_admin_views_token_and_resets_selected_account(site):
+def test_admin_cannot_view_tokens_or_reset_another_account(site):
     c,a,t=site
     interest(c,'公开保留')
     created=c.post('/api/v1/admin/invites',json={'label':'戊'}).json()
-    assert 'subscription_url' not in created
+    assert 'subscription_url' not in created and 'token' in created
+    with a.state.store.tx() as db:
+        columns=[row[1] for row in db.execute('PRAGMA table_info(accounts)')]
+    assert 'login_token' not in columns
     relogin(c,created['token'])
-    interest(c,'受邀将被清空')
+    interest(c,'受邀保留')
     relogin(c,t['admin'])
     page=c.get('/admin').text
-    assert '管理账号' in page and '创建账户' in page and '邀请别人使用自己的日历' not in page and '对方登录后' not in page
-    assert '定期搜索' in c.get('/model').text
+    assert '管理账号' in page and '创建账户' in page and '查看令牌' not in page and 'reset-account' not in page
+    assert '邀请别人使用自己的日历' not in page and '对方登录后' not in page
     listed=c.get('/api/v1/admin/accounts')
     assert listed.status_code==200 and created['token'] not in listed.text and t['admin'] not in listed.text
     accounts=listed.json()['items']
-    assert accounts[0]['kind']=='public' and all('login_token' not in item and 'subscription_url' not in item for item in accounts)
+    assert accounts[0]['kind']=='public' and all('login_token' not in item and 'token' not in item and 'subscription_url' not in item for item in accounts)
     invite=next(item for item in accounts if item['id']==created['id'])
-    viewed=c.get('/api/v1/admin/accounts/'+created['id']+'/token')
-    assert viewed.status_code==200 and viewed.json()['token']==created['token']
-    assert '受邀将被清空' not in viewed.text and 'subscription_url' not in viewed.text
-    own=c.get('/api/v1/admin/accounts/'+accounts[0]['id']+'/token')
-    assert own.status_code==200 and own.json()['token']==t['admin']
-    assert c.get('/api/v1/admin/accounts/missing/token').status_code==404
-    body={'scope':'all','confirmation':'RESET','account_id':invite['id'],'state_epoch':invite['state_epoch'],'config_version':invite['config_version']}
-    reset=c.post('/api/v1/admin/reset',json=body)
-    assert reset.status_code==200 and reset.json()['account_id']==invite['id'] and 'interests' not in reset.json()
-    assert c.post('/api/v1/admin/reset',json={**body,'account_id':'missing'}).status_code==404
-    relogin(c,created['token'])
-    assert c.get('/api/v1/interests').json()['items']==[]
-    relogin(c,t['admin'])
+    assert c.get('/api/v1/admin/accounts/'+created['id']+'/token').status_code==404
+    status=c.get('/api/v1/status').json()
+    refused=c.post('/api/v1/admin/reset',json={'scope':'all','confirmation':'RESET','account_id':invite['id'],'state_epoch':status['state_epoch'],'config_version':status['config_version']})
+    assert refused.status_code==403
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开保留'}
-    assert '受邀将被清空' not in c.get('/api/v1/interests').text
+    cleared=c.post('/api/v1/admin/reset',json={'scope':'calendar','confirmation':'RESET','state_epoch':status['state_epoch'],'config_version':status['config_version']})
+    assert cleared.status_code==200 and cleared.json()['account_id']!=invite['id'] and 'interests' not in cleared.json()
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开保留'}
+    with a.state.store.tx() as db:
+        kept={row[0] for row in db.execute('SELECT keyword FROM interests WHERE account_id=? AND deleted_at IS NULL',(invite['id'],))}
+    assert kept=={'受邀保留'}
 
 def test_v1_database_opens_as_public_account(tmp_path):
     import sqlite3
@@ -706,8 +705,8 @@ def test_v1_database_opens_as_public_account(tmp_path):
     Store(tmp_path,'calendar-secret-value')
     with sqlite3.connect(db_path) as db:
         db.row_factory=sqlite3.Row
-        assert db.execute('PRAGMA user_version').fetchone()[0]==3
-        assert 'login_token' in [row[1] for row in db.execute('PRAGMA table_info(accounts)')]
+        assert db.execute('PRAGMA user_version').fetchone()[0]==4
+        assert 'login_token' not in [row[1] for row in db.execute('PRAGMA table_info(accounts)')]
         account=db.execute("SELECT * FROM accounts WHERE kind='public'").fetchone()
         assert account['calendar_token']=='calendar-secret-value' and account['login_hash'] is None
         assert db.execute('SELECT account_id FROM interests').fetchone()[0]==account['id']

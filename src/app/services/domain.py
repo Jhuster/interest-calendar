@@ -240,7 +240,7 @@ def create_invite(db, label):
     if len(label)>80: raise Problem('SCHEMA_INVALID','备注不超过80字')
     if not label: label='受邀账户'
     login=secrets.token_urlsafe(32); calendar=secrets.token_urlsafe(32); aid=uid()
-    db.execute('INSERT INTO accounts(id,kind,label,login_hash,calendar_hash,calendar_token,revoked_at,created_at,login_token) VALUES(?,?,?,?,?,?,NULL,?,?)',(aid,'invite',label,token_hash(login),token_hash(calendar),calendar,stamp(),login))
+    db.execute('INSERT INTO accounts(id,kind,label,login_hash,calendar_hash,calendar_token,revoked_at,created_at) VALUES(?,?,?,?,?,?,NULL,?)',(aid,'invite',label,token_hash(login),token_hash(calendar),calendar,stamp()))
     db.execute('INSERT INTO settings(account_id,state_epoch) VALUES(?,?)',(aid,str(uuid.uuid4())))
     seed_publication(db,aid)
     return dict(id=aid,label=label,token=login,calendar_token=calendar)
@@ -255,5 +255,5 @@ def reissue_invite(db, aid):
     if not row or row['kind']!='invite': raise Problem('NOT_FOUND','邀请不存在',404)
     if row['revoked_at']: raise Problem('INVITE_REVOKED','邀请已撤销',409)
     login=secrets.token_urlsafe(32)
-    db.execute('UPDATE accounts SET login_hash=?,login_token=? WHERE id=?',(token_hash(login),login,aid))
+    db.execute('UPDATE accounts SET login_hash=? WHERE id=?',(token_hash(login),aid))
     return dict(id=aid,token=login,calendar_token=row['calendar_token'])

@@ -248,13 +248,9 @@ def create_app(config=None):
         if b.get('confirmation') != 'RESET':
             raise Problem('CONFIRMATION_REQUIRED','请输入 RESET 确认此操作',400)
         with app.state.store.tx(True) as db:
+            aid=account_id_for(request, db)
             chosen=b.get('account_id', None)
-            if chosen is None: aid=account_id_for(request, db)
-            else:
-                if not isinstance(chosen,str) or not chosen: raise Problem('SCHEMA_INVALID','account_id 必须是账户 id')
-                row=db.execute('SELECT id FROM accounts WHERE id=?',(chosen,)).fetchone()
-                if not row: raise Problem('NOT_FOUND','账户不存在',404)
-                aid=row['id']
+            if chosen is not None and chosen!=aid: raise Problem('FORBIDDEN','只能操作当前登录的账户',403)
             precondition(db,b,aid)
             reset_data(db, b.get('scope'), aid)
             db.execute('INSERT INTO audit_log(operation,created_at,result,request_id) VALUES(?,?,?,?)',('reset',stamp(),b['scope'],request.state.request_id))
@@ -328,19 +324,6 @@ def create_app(config=None):
             for row in db.execute(query):
                 items.append(dict(id=row['id'],kind=row['kind'],label=row['label'],revoked_at=row['revoked_at'],created_at=row['created_at'],state_epoch=row['state_epoch'],config_version=row['config_version']))
         return answer(request,{'items':items})
-    @app.get('/api/v1/admin/accounts/{aid}/token')
-    def account_token(aid:str,request:Request):
-        admin(request)
-        with app.state.store.tx() as db:
-            row=db.execute('SELECT id,kind,login_token FROM accounts WHERE id=?',(aid,)).fetchone()
-        if not row: raise Problem('NOT_FOUND','账户不存在',404)
-        if row['kind']=='public':
-            token=config.saved_token('admin')
-            if not token: raise Problem('TOKEN_UNAVAILABLE','旧令牌原文已不存在，请在本机重新生成管理令牌后再查看',409)
-        else:
-            token=row['login_token']
-            if not token: raise Problem('TOKEN_UNAVAILABLE','这份登录令牌的原文没有留下，请重新签发后再查看',409)
-        return answer(request,{'token':token})
     @app.post('/api/v1/admin/invites')
     async def add_invite(request:Request):
         admin(request);b=await body(request)
