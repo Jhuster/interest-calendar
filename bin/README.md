@@ -8,7 +8,7 @@
 - `runtime-env.sh`：启动和初始化共用的运行环境配置。
 - `runtime/`：本机下载的工具、Python 和缓存，不进入 Git；换机器后重新运行初始化。
 - `start.sh`：前台启动服务，适合本机调试。
-- `start-background.sh`：后台启动服务。日志写入 `bin/data/server.log`，启动时若超过 1 MiB 会轮转并只保留最近 7 份，权限为仅当前用户可读。
+- `start-background.sh`：后台启动服务。日志写入 `bin/data/server.log`。启动前和运行中若超过 1 MiB 会轮转，只保留最近 7 份，权限为仅当前用户可读。运行中是复制后截断，避免已经打开的日志继续写进旧文件。
 - `build-docker/`：容器构建子目录，包含 `build-image.sh`、`Dockerfile` 和容器启动入口。
 - `demo.py`：按需生成隔离的虚构演示数据，不是正式数据采集程序。
 - `data/`：正式数据库、备份、凭据和运行日志。该目录不会提交 Git。
@@ -55,7 +55,7 @@ uv run --directory ../src python -m app backup --data-dir ../bin/data
 
 服务运行时每天会补一份当天的备份，并只保留最近 7 份，文件在 `bin/data/backups/`。上面的手工命令总会再写一份当前快照，即使当天的自动备份已经存在。迁移前用它保留一份额外副本。
 
-恢复先停服务，再生成差异报告。报告列出备份之后新增的事件、来源别名、删除记录、已撤销兴趣和撤下差异；能读到当前库时，会把需要更新的事件 SEQUENCE 提升到已知最大值之上。核对报告后再执行，当前库会先被保留到 `bin/data/restore-preserved/`：
+恢复先停服务，再生成差异报告。报告列出备份之后新增的事件、来源别名、删除记录、已撤销兴趣和撤下差异；能读到当前库时，会把需要更新的事件 SEQUENCE 提升到已知最大值之上。核对报告后再执行，当前库会先被保留到 `bin/data/restore-preserved/`，该目录只留最近一份数据库。差异报告在 `bin/data/restore-reports/`，只留最近 7 份：
 
 ```sh
 uv run --directory ../src python -m app stop --data-dir ../bin/data
@@ -73,7 +73,9 @@ uv run --directory ../src python -m app restore --data-dir ../bin/data --backup 
 
 ```sh
 ./bin/build-docker/build-image.sh
-docker run -d --name interest-calendar -p 8787:8787 -e BASE_URL=http://192.168.1.20:8787 -v interest-calendar-data:/opt/interest-calendar/bin/data interest-calendar:local
+docker run -d --name interest-calendar --log-opt max-size=1m --log-opt max-file=7 -p 8787:8787 -e BASE_URL=http://192.168.1.20:8787 -v interest-calendar-data:/opt/interest-calendar/bin/data interest-calendar:local
 ```
 
-将示例地址替换为服务器实际地址；容器不能可靠探测宿主机的局域网地址。管理令牌在数据卷的 `credentials.json`（或首次的 `first-run-credentials.txt`）中，不写入容器标准输出。
+将示例地址替换为服务器实际地址；容器不能可靠探测宿主机的局域网地址。`--log-opt` 把容器标准输出限制为 1 MiB × 7 份，镜像本身不声明这个上限。管理令牌在数据卷的 `credentials.json`（或首次的 `first-run-credentials.txt`）中，不写入容器标准输出。订阅地址在登录后的设置页，路径里带有密钥，不是固定的 `/calendar.ics`。
+
+对公网开放 8787 之前，把 `BASE_URL` 设为 `https://…`，并用 `python -m app serve --cert … --key …` 或在反向代理上终止 TLS。进程监听 `0.0.0.0` 只表示接受本机各网卡上的连接，不代替阿里云安全组。首次启动后保存令牌，并删除 `first-run-credentials.txt`。细节见 `docs/存储与部署规格.md`。

@@ -26,6 +26,40 @@ class Config:
     def agent_token(self):
         return self.saved_token('agent')
 
+    def listen_host(self):
+        # One socket on every interface, including --dev. A loopback-only
+        # socket cannot accept the LAN subscription URL shown to a phone.
+        return '0.0.0.0'
+
+    def allowed_hosts(self):
+        hosts=[]
+        for origin in (self.base_url, self._subscription_origin()):
+            if not origin: continue
+            host=urlparse(origin).hostname
+            if host and host not in hosts: hosts.append(host)
+        return hosts
+
+    def accepted_origins(self):
+        origins=[]
+        for origin in (self.base_url, self._subscription_origin()):
+            if origin and origin not in origins: origins.append(origin)
+        return origins
+
+    def subscription_url(self):
+        token=self.saved_token('calendar')
+        origin=self._subscription_origin()
+        if not token or not origin: return None
+        return origin+'/c/'+token+'/calendar.ics'
+
+    def _subscription_origin(self):
+        url=urlparse(self.base_url)
+        # A configured non-loopback origin is the address the operator chose.
+        if not _loopback_host(url.hostname): return self.base_url
+        if not self.development: return self.base_url
+        detected=detect_local_ip()
+        if _loopback_host(detected): return None
+        return f'{url.scheme}://{detected}:{url.port or 8787}'
+
     def saved_token(self, role):
         credentials=self.credentials()
         token=credentials.get(role+'_token')
@@ -41,6 +75,11 @@ class Config:
         return None
 
 def token_hash(token): return hashlib.sha256(token.encode()).hexdigest()
+
+def _loopback_host(host):
+    if not host: return True
+    host=host.strip('[]').lower()
+    return host in ('localhost','::1') or host.startswith('127.')
 
 def detect_local_ip():
     """Best-effort LAN address discovery; never returns a loopback address."""
@@ -58,7 +97,7 @@ def initialize(config,rotate=None):
     config.data_dir.mkdir(parents=True,exist_ok=True,mode=0o700)
     path=config.data_dir/'credentials.json';existing=json.loads(path.read_text()) if path.exists() else {}
     tokens={}
-    for role in ('admin','agent'):
+    for role in ('admin','agent','calendar'):
         if role not in existing or rotate==role:
             tokens[role]=secrets.token_urlsafe(32);existing[role]=token_hash(tokens[role])
             existing[role+'_token']=tokens[role]

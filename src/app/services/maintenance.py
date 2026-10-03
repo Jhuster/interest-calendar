@@ -26,6 +26,36 @@ def record_backup(store, state):
     else:
         state.backup_error=None
 
+def rotate_open_log(path, keep=7, max_bytes=1024*1024):
+    """Copy and truncate a log that another descriptor may still have open for append."""
+    path=Path(path)
+    if not path.exists() or path.stat().st_size<=max_bytes:
+        if path.exists(): path.chmod(0o600)
+        return path
+    oldest=path.with_name(path.name+f'.{keep}')
+    if oldest.exists(): oldest.unlink()
+    for index in range(keep-1,0,-1):
+        src=path.with_name(path.name+f'.{index}')
+        if src.exists(): src.replace(path.with_name(path.name+f'.{index+1}'))
+    archived=path.with_name(path.name+'.1')
+    shutil.copyfile(path, archived)
+    archived.chmod(0o600)
+    with open(path,'r+b') as handle: handle.truncate(0)
+    path.chmod(0o600)
+    for index in range(1,keep+1):
+        old=path.with_name(path.name+f'.{index}')
+        if old.exists(): old.chmod(0o600)
+    return path
+
+def rotate_service_log(directory):
+    configured=os.environ.get('CALENDAR_LOG_FILE')
+    path=Path(configured) if configured else Path(directory)/'server.log'
+    if not path.exists(): return None
+    try: return rotate_open_log(path)
+    except OSError:
+        logging.getLogger('uvicorn.error').exception('日志轮转失败')
+        return None
+
 def rotate_log(path, keep=7, max_bytes=1024*1024):
     path=Path(path)
     path.parent.mkdir(parents=True,exist_ok=True)
@@ -250,11 +280,14 @@ def _preserve(directory, source):
     folder.mkdir(parents=True,exist_ok=True)
     folder.chmod(0o700)
     dest=folder/(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'.sqlite3')
-    try: return str(copy_database(source,dest))
+    try: copied=str(copy_database(source,dest))
     except sqlite3.Error:
         shutil.copy2(source,dest)
         dest.chmod(0o600)
-        return str(dest)
+        copied=str(dest)
+    for old in folder.glob('*.sqlite3'):
+        if old.resolve()!=Path(copied).resolve(): old.unlink()
+    return copied
 
 def _install(source, live):
     temporary=live.with_name(live.name+'.restore')
@@ -294,6 +327,7 @@ def restore_database(directory, backup, apply=False):
         destination=folder/(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'.txt')
         destination.write_text(report['text'],encoding='utf-8')
         destination.chmod(0o600)
+        for old in sorted(folder.glob('*.txt'))[:-7]: old.unlink()
         report['report_path']=str(destination)
         return report
 

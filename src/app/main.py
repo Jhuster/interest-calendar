@@ -16,9 +16,13 @@ from app.models.protocol import *
 from app.storage.database import Store
 from app.services.domain import *
 from app.services.calendar import publish
-from app.services.maintenance import record_backup, startup_token_message
+from app.services.maintenance import record_backup, rotate_service_log, startup_token_message
 
 ROOT=Path(__file__).parent
+
+def calendar_feed(path):
+    parts=path.split('/')
+    return len(parts)==4 and parts[0]=='' and parts[1]=='c' and bool(parts[2]) and parts[3]=='calendar.ics'
 
 def create_app(config=None):
     config=config or Config.environment();config.validate();sessions={};limits=defaultdict(deque)
@@ -30,11 +34,12 @@ def create_app(config=None):
     async def lifespan(app):
         config.data_dir.mkdir(exist_ok=True,parents=True)
         first_tokens=initialize(config)
-        if first_tokens:
+        shown={k:v for k,v in first_tokens.items() if k in ('admin','agent')}
+        if shown:
             first_run=config.data_dir/'first-run-credentials.txt'
             fd=os.open(first_run,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
             with os.fdopen(fd,'w') as credentials_file:
-                credentials_file.write('\n'.join(f'{k.upper()}_TOKEN={v}' for k,v in first_tokens.items())+'\n')
+                credentials_file.write('\n'.join(f'{k.upper()}_TOKEN={v}' for k,v in shown.items())+'\n')
         first_run=config.data_dir/'first-run-credentials.txt'
         if first_run.exists():
             logging.getLogger('uvicorn.error').info('首次凭据文件：%s', first_run.resolve())
@@ -56,6 +61,7 @@ def create_app(config=None):
                 while True:
                     await asyncio.sleep(delay)
                     await asyncio.to_thread(attempt_publish)
+                    await asyncio.to_thread(rotate_service_log,config.data_dir)
                     await asyncio.to_thread(record_backup,app.state.store,app.state)
                     with app.state.store.tx() as db: failed=settings(db)['publish_error']
                     delay=min(300,30 if delay==5 else delay*4) if failed else 5
@@ -69,7 +75,7 @@ def create_app(config=None):
             lock.close();sessions.clear();pid_path.unlink(missing_ok=True)
     app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
     app.state.config=config
-    app.add_middleware(TrustedHostMiddleware,allowed_hosts=[urlparse(config.base_url).hostname])
+    app.add_middleware(TrustedHostMiddleware,allowed_hosts=config.allowed_hosts())
     templates=Jinja2Templates(directory=ROOT/'templates')
     app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
     def answer(request,data,status=200):
@@ -83,7 +89,7 @@ def create_app(config=None):
     async def boundary(request,call_next):
         request.state.request_id=uid();request.state.role=None
         try:
-            public=request.url.path in ('/login','/health','/calendar.ics') or request.url.path.startswith('/static/') or (request.url.path=='/api/v1/session' and request.method=='POST')
+            public=request.url.path in ('/login','/health') or calendar_feed(request.url.path) or request.url.path.startswith('/static/') or (request.url.path=='/api/v1/session' and request.method=='POST')
             credentials=config.credentials(); cookie=request.cookies.get('session');session=sessions.get(cookie)
             if session and (session['expires']<time.time() or session['admin_hash']!=credentials['admin']):
                 sessions.pop(cookie,None);session=None
@@ -95,7 +101,7 @@ def create_app(config=None):
                 raise Problem('AUTH_REQUIRED','请先登录或配置有效 Agent 凭据',401,action='CONTACT_USER')
             if request.method not in ('GET','HEAD','OPTIONS'):
                 if request.state.role!='agent':
-                    if request.headers.get('origin')!=config.base_url: raise Problem('FORBIDDEN','请求来源不匹配',403)
+                    if request.headers.get('origin') not in config.accepted_origins(): raise Problem('FORBIDDEN','请求来源不匹配',403)
                     if request.state.role=='admin' and not hmac.compare_digest(request.headers.get('x-csrf-token',''),session['csrf']): raise Problem('FORBIDDEN','页面凭据已过期，请刷新',403)
                 if request.headers.get('content-encoding'): raise Problem('SCHEMA_INVALID','不支持压缩上传',415)
                 chunks=[];size=0
@@ -113,7 +119,7 @@ def create_app(config=None):
         response.headers['X-Content-Type-Options']='nosniff'
         response.headers['Referrer-Policy']='no-referrer'
         response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-        if request.url.path!='/calendar.ics': response.headers['Cache-Control']='no-store'
+        if not (calendar_feed(request.url.path) and response.status_code in (200,304)): response.headers['Cache-Control']='no-store'
         return response
     @app.exception_handler(Problem)
     async def errors(request,exc):
@@ -193,6 +199,8 @@ def create_app(config=None):
             precondition(db,b)
             reset_data(db, b.get('scope'))
             db.execute('INSERT INTO audit_log(operation,created_at,result,request_id) VALUES(?,?,?,?)',('reset',stamp(),b['scope'],request.state.request_id))
+        try: app.state.store.vacuum()
+        except Exception: logging.getLogger('uvicorn.error').exception('压缩数据库失败')
         return answer(request,{'ok':True,'scope':b.get('scope')})
     @app.get('/api/v1/events')
     def events(request:Request,interest_id:str|None=None,start_date:str|None=None,end_date:str|None=None,limit:int=50,offset:int=0):
@@ -236,15 +244,17 @@ def create_app(config=None):
         admin(request)
         with app.state.store.tx() as db:
             s=settings(db);pub=db.execute('SELECT data_revision,created_at FROM publications WHERE id=?',(s['active_publication_id'],)).fetchone()
-            s.update(published_revision=pub['data_revision'] if pub else -1,published_at=pub['created_at'] if pub else None,candidate_count=db.execute("SELECT count(*) FROM candidates WHERE state='pending'").fetchone()[0],last_received=db.execute('SELECT max(received_at) FROM batches').fetchone()[0],last_imported=db.execute('SELECT max(received_at) FROM batches WHERE status<400').fetchone()[0],base_url=config.base_url,subscription_url=None if config.development else config.base_url+'/calendar.ics',development=config.development,backup_error=app.state.backup_error)
+            s.update(published_revision=pub['data_revision'] if pub else -1,published_at=pub['created_at'] if pub else None,candidate_count=db.execute("SELECT count(*) FROM candidates WHERE state='pending'").fetchone()[0],last_received=db.execute('SELECT max(received_at) FROM batches').fetchone()[0],last_imported=db.execute('SELECT max(received_at) FROM batches WHERE status<400').fetchone()[0],base_url=config.base_url,subscription_url=config.subscription_url(),development=config.development,backup_error=app.state.backup_error)
         return answer(request,s)
     @app.post('/api/v1/publications/retry')
     async def retry(request:Request):
         admin(request);b=await body(request)
         with app.state.store.tx() as db: epoch(db,b.get('state_epoch'))
         attempt_publish();return answer(request,{'ok':True})
-    @app.api_route('/calendar.ics',methods=['GET','HEAD'])
-    def calendar(request:Request):
+    @app.api_route('/c/{token}/calendar.ics',methods=['GET','HEAD'])
+    def calendar(token:str,request:Request):
+        expected=config.credentials().get('calendar')
+        if not expected or not hmac.compare_digest(token_hash(token),expected): raise Problem('NOT_FOUND','未找到日历',404)
         with app.state.store.tx() as db: row=db.execute('SELECT p.* FROM publications p JOIN settings s ON s.active_publication_id=p.id').fetchone()
         if not row: raise Problem('TEMPORARILY_UNAVAILABLE','日历尚未初始化',503)
         tag='"'+row['sha256']+'"';headers={'ETag':tag,'Cache-Control':'no-cache'}

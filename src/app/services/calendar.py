@@ -1,4 +1,4 @@
-import hashlib, json, uuid
+import hashlib, json, logging, uuid
 from datetime import date, timezone, timedelta
 from icalendar import Calendar, Event
 from app.models.protocol import dt, stamp
@@ -44,9 +44,19 @@ def publish(store):
         revision=s['data_revision']
         rows=[dict(r) for r in db.execute('SELECT * FROM events')]
     blob=render(rows)
+    pruned=False
     with store.tx(True) as db:
         if db.execute('SELECT data_revision FROM settings').fetchone()[0]!=revision: return False
+        previous=db.execute('SELECT active_publication_id FROM settings').fetchone()[0]
         pid=str(uuid.uuid4())
         db.execute('INSERT INTO publications VALUES(?,?,?,?,?)',(pid,revision,blob,hashlib.sha256(blob).hexdigest(),stamp()))
         db.execute('UPDATE settings SET active_publication_id=?,publish_error=NULL',(pid,))
+        keep=[pid]
+        if previous: keep.append(previous)
+        deleted=db.execute('DELETE FROM publications WHERE id NOT IN ('+','.join('?'*len(keep))+')',keep).rowcount
+        pruned=deleted>0
+    if pruned:
+        try: store.vacuum()
+        except Exception:
+            logging.getLogger('uvicorn.error').exception('压缩数据库失败')
     return True

@@ -60,3 +60,11 @@ class Store:
 
     def _prune_backups(self, folder):
         for old in sorted(folder.glob('*.sqlite3'))[:-7]: old.unlink()
+
+    def vacuum(self):
+        # VACUUM cannot run inside a transaction. Autocommit mode keeps it outside one.
+        db=sqlite3.connect(self.path,timeout=3,isolation_level=None)
+        try:
+            db.execute('PRAGMA busy_timeout=3000')
+            db.execute('VACUUM')
+        finally: db.close()
