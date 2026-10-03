@@ -28,4 +28,4 @@ fi
 printf '%s\n' '正在准备 Python 3.12 和项目依赖，首次运行需要联网…'
 uv python install 3.12 --no-bin
 uv sync --project "$PROJECT_DIR/src" --python 3.12 --managed-python --locked --no-dev
-printf '%s\n' '初始化完成！运行 ./bin/start.sh 启动服务，或 ./bin/start-background.sh 后台启动。'
+printf '%s\n' '初始化完成！本机运行 ./bin/start.sh 或 ./bin/start-background.sh。公网 ECS 运行 ./bin/start-ecs.sh。'
