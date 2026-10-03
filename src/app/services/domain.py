@@ -1,6 +1,6 @@
-import hashlib, json, secrets, sqlite3, unicodedata, uuid
+import hashlib, json, sqlite3, unicodedata, uuid
 from datetime import timedelta
-from app.config import token_hash
+from app.config import login_token, subscription_secret, token_hash
 from app.models.protocol import *
 
 def uid(): return str(uuid.uuid4())
@@ -239,7 +239,7 @@ def create_invite(db, label):
     label=label.strip()
     if len(label)>80: raise Problem('SCHEMA_INVALID','备注不超过80字')
     if not label: label='受邀账户'
-    login=secrets.token_urlsafe(32); calendar=secrets.token_urlsafe(32); aid=uid()
+    login=login_token(); calendar=subscription_secret(); aid=uid()
     db.execute('INSERT INTO accounts(id,kind,label,login_hash,calendar_hash,calendar_token,revoked_at,created_at) VALUES(?,?,?,?,?,?,NULL,?)',(aid,'invite',label,token_hash(login),token_hash(calendar),calendar,stamp()))
     db.execute('INSERT INTO settings(account_id,state_epoch) VALUES(?,?)',(aid,str(uuid.uuid4())))
     seed_publication(db,aid)
@@ -254,6 +254,6 @@ def reissue_invite(db, aid):
     row=db.execute('SELECT * FROM accounts WHERE id=?',(aid,)).fetchone()
     if not row or row['kind']!='invite': raise Problem('NOT_FOUND','邀请不存在',404)
     if row['revoked_at']: raise Problem('INVITE_REVOKED','邀请已撤销',409)
-    login=secrets.token_urlsafe(32)
+    login=login_token()
     db.execute('UPDATE accounts SET login_hash=? WHERE id=?',(token_hash(login),aid))
     return dict(id=aid,token=login,calendar_token=row['calendar_token'])

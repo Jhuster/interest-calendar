@@ -80,6 +80,13 @@ class Config:
 
 def token_hash(token): return hashlib.sha256(token.encode()).hexdigest()
 
+def login_token():
+    # 96 bits, always 16 URL-safe characters. Not a short integer, and not the subscription secret.
+    return secrets.token_urlsafe(12)
+
+def subscription_secret():
+    return secrets.token_urlsafe(12)
+
 def _loopback_host(host):
     if not host: return True
     host=host.strip('[]').lower()
@@ -103,7 +110,10 @@ def initialize(config,rotate=None):
     tokens={}
     for role in ('admin','agent','calendar'):
         if role not in existing or rotate==role:
-            tokens[role]=secrets.token_urlsafe(32);existing[role]=token_hash(tokens[role])
+            if role=='agent': tokens[role]=secrets.token_urlsafe(32)
+            elif role=='admin': tokens[role]=login_token()
+            else: tokens[role]=subscription_secret()
+            existing[role]=token_hash(tokens[role])
             existing[role+'_token']=tokens[role]
     if tokens:
         temporary=path.with_suffix('.tmp')

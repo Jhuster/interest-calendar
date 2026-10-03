@@ -1,7 +1,7 @@
 import sqlite3, uuid
 from pathlib import Path
 from contextlib import contextmanager
-from app.config import token_hash
+from app.config import subscription_secret, token_hash
 from app.models.protocol import stamp
 
 class Store:
@@ -29,7 +29,10 @@ class Store:
             if version==3:
                 _migrate_v3_to_v4(db)
                 version=4
-            if version!=4:
+            if version==4:
+                _migrate_v4_to_v5(db)
+                version=5
+            if version!=5:
                 raise RuntimeError('Unsupported database version')
             _sync_public_calendar(db, calendar_token)
         finally:
@@ -112,6 +115,24 @@ def _migrate_v3_to_v4(db):
         db.execute('ROLLBACK')
         raise
 
+def _migrate_v4_to_v5(db):
+    # A long path secret cannot be shortened in place. Replace it once; the old URL becomes 404.
+    db.execute('BEGIN')
+    try:
+        for row in db.execute("SELECT id,calendar_token FROM accounts WHERE kind='invite'"):
+            if len(row['calendar_token'])==16: continue
+            secret=subscription_secret()
+            digest=token_hash(secret)
+            while db.execute('SELECT 1 FROM accounts WHERE calendar_hash=?',(digest,)).fetchone():
+                secret=subscription_secret()
+                digest=token_hash(secret)
+            db.execute('UPDATE accounts SET calendar_hash=?,calendar_token=? WHERE id=?',(digest,secret,row['id']))
+        db.execute('PRAGMA user_version=5')
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK')
+        raise
+
 def _sync_public_calendar(db, calendar_token):
     if not calendar_token: return
     digest=token_hash(calendar_token)
@@ -126,12 +147,11 @@ def _sync_public_calendar(db, calendar_token):
         raise
 
 def _migrate_v1_to_v2(db, calendar_token):
-    import secrets
     db.execute('PRAGMA foreign_keys=OFF')
     db.execute('BEGIN')
     try:
         public_id=str(uuid.uuid4())
-        token=calendar_token or secrets.token_urlsafe(32)
+        token=calendar_token or subscription_secret()
         old=db.execute('SELECT * FROM settings').fetchone()
         db.execute('''CREATE TABLE accounts (
             id TEXT PRIMARY KEY,

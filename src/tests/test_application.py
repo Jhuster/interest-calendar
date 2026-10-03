@@ -621,9 +621,11 @@ def test_login_token_is_not_calendar_secret(site):
     url=c.get('/api/v1/status').json()['subscription_url']
     secret=url.rstrip('/').split('/c/')[1].split('/')[0]
     assert created['token']!=secret and created['token'] not in url
+    assert len(created['token'])==16 and len(secret)==16 and not created['token'].isdigit() and not secret.isdigit()
+    assert set(created['token']+secret)<=set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_')
     relogin(c,t['admin'])
     again=c.post('/api/v1/admin/invites/'+created['id']+'/reissue').json()
-    assert again['token']!=created['token'] and 'subscription_url' not in again and secret not in c.get('/api/v1/admin/accounts').text
+    assert again['token']!=created['token'] and len(again['token'])==16 and 'subscription_url' not in again and secret not in c.get('/api/v1/admin/accounts').text
     assert c.delete('/api/v1/session').status_code==200
     assert c.post('/api/v1/session',json={'token':created['token']}).status_code==401
     relogin(c,again['token'])
@@ -696,6 +698,41 @@ def test_admin_cannot_view_tokens_or_reset_another_account(site):
         kept={row[0] for row in db.execute('SELECT keyword FROM interests WHERE account_id=? AND deleted_at IS NULL',(invite['id'],))}
     assert kept=={'受邀保留'}
 
+def test_long_subscription_secret_is_replaced_once(tmp_path):
+    import sqlite3
+    from app.config import token_hash
+    from app.services.domain import create_invite
+    from app.storage.database import Store
+    config=Config(tmp_path,'http://127.0.0.1:8787',True)
+    tokens=initialize(config)
+    assert len(tokens['admin'])==16 and len(tokens['calendar'])==16 and len(tokens['agent'])==43
+    assert tokens['admin']!=tokens['calendar']
+    store=Store(tmp_path, config.saved_token('calendar'))
+    with store.tx(True) as db:
+        created=create_invite(db,'旧账户')
+        login_hash=db.execute('SELECT login_hash FROM accounts WHERE id=?',(created['id'],)).fetchone()[0]
+    long='LongSecretValueThatIsNotSixteenCharsXXXX'
+    with store.tx(True) as db:
+        db.execute('UPDATE accounts SET calendar_token=?,calendar_hash=? WHERE id=?',(long,token_hash(long),created['id']))
+        db.execute('PRAGMA user_version=4')
+    Store(tmp_path, config.saved_token('calendar'))
+    with sqlite3.connect(tmp_path/'calendar.sqlite3') as db:
+        db.row_factory=sqlite3.Row
+        assert db.execute('PRAGMA user_version').fetchone()[0]==5
+        row=db.execute('SELECT calendar_token,calendar_hash,login_hash FROM accounts WHERE id=?',(created['id'],)).fetchone()
+        secret=row['calendar_token']
+        assert len(secret)==16 and secret!=long and row['login_hash']==login_hash and row['calendar_hash']==token_hash(secret)
+        assert db.execute("SELECT calendar_token FROM accounts WHERE kind='public'").fetchone()[0]==tokens['calendar']
+    Store(tmp_path, config.saved_token('calendar'))
+    with sqlite3.connect(tmp_path/'calendar.sqlite3') as db:
+        assert db.execute('SELECT calendar_token FROM accounts WHERE id=?',(created['id'],)).fetchone()[0]==secret
+    with TestClient(create_app(config),base_url=config.base_url) as c:
+        assert c.get('/c/'+long+'/calendar.ics').status_code==404
+        body=c.get('/c/'+secret+'/calendar.ics')
+        assert body.status_code==200 and 'BEGIN:VCALENDAR' in body.text
+        assert c.get('/public/calendar.ics').status_code==200
+        assert c.post('/api/v1/session',json={'token':created['token']},headers={'Origin':config.base_url}).status_code==200
+
 def test_v1_database_opens_as_public_account(tmp_path):
     import sqlite3
     from app.storage.database import Store
@@ -708,7 +745,7 @@ def test_v1_database_opens_as_public_account(tmp_path):
     Store(tmp_path,'calendar-secret-value')
     with sqlite3.connect(db_path) as db:
         db.row_factory=sqlite3.Row
-        assert db.execute('PRAGMA user_version').fetchone()[0]==4
+        assert db.execute('PRAGMA user_version').fetchone()[0]==5
         assert 'login_token' not in [row[1] for row in db.execute('PRAGMA table_info(accounts)')]
         account=db.execute("SELECT * FROM accounts WHERE kind='public'").fetchone()
         assert account['calendar_token']=='calendar-secret-value' and account['login_hash'] is None
