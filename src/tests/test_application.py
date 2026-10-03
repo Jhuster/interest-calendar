@@ -67,7 +67,9 @@ def test_privileges_origin_revocation_and_private_paths(site):
     assert c.post('/api/v1/interests',json={},headers={'Origin':'https://evil.test'}).status_code==403
     assert c.post('/api/v1/interests',json={},headers={'Authorization':'Bearer '+t['agent']}).status_code==403
     assert c.post('/api/v1/batches',json={}).status_code==403
-    initialize(a.state.config,'admin');assert c.get('/api/v1/status').status_code==401
+    initialize(a.state.config,'admin')
+    stale=c.get('/api/v1/status');assert stale.status_code==200 and stale.json()['role'] is None
+    assert c.get('/api/v1/agent/token').status_code==401
     initialize(a.state.config,'agent');assert c.get('/api/v1/agent/context',headers={'Authorization':'Bearer '+t['agent']}).status_code==401
 
 def test_unfollow_shared_history_and_restore_uid(site):
@@ -131,8 +133,10 @@ def test_first_start_token_and_http_login(tmp_path,capsys):
         assert '凭据文件' in output
         assert credentials.stat().st_mode & 0o777 == 0o600
         assert config.saved_token('admin')==token
-        assert c.get('/api/v1/status').status_code==401
-        assert c.get('/',follow_redirects=False).status_code==303
+        anonymous=c.get('/api/v1/status');assert anonymous.status_code==200
+        assert anonymous.json()['role'] is None and anonymous.json()['subscription_url'] is None
+        home=c.get('/',follow_redirects=False);assert home.status_code==200
+        assert 'session' not in home.headers.get('set-cookie','')
         response=c.post('/api/v1/session',json={'token':token},headers={'Origin':config.base_url})
         assert response.status_code==200
         assert 'Secure' not in response.headers['set-cookie']
@@ -387,7 +391,8 @@ def test_publications_keep_current_and_previous_only(site):
 def test_vacuum_reclaims_pages_and_failure_keeps_snapshot(site,monkeypatch):
     c,a,t=site;i=interest(c);p=batch(c,[i]);assert upload(c,t,p).status_code==202;assert publish(a.state.store)
     with a.state.store.tx(True) as db:
-        db.execute('INSERT INTO publications VALUES(?,?,?,?,?)',('big',-1,b'x'*200000,'b'*64,'2000-01-01T00:00:00Z'))
+        aid=db.execute("SELECT id FROM accounts WHERE kind='public'").fetchone()[0]
+        db.execute('INSERT INTO publications VALUES(?,?,?,?,?,?)',('big',-1,b'x'*200000,'b'*64,'2000-01-01T00:00:00Z',aid))
     with a.state.store.tx() as db: before=db.execute('PRAGMA page_count').fetchone()[0]
     q=renewed(p);q['events'][0].update(event_id=c.get('/api/v1/events').json()['items'][0]['id'],base_version=1,title='真空修订')
     assert upload(c,t,q).status_code==202;assert publish(a.state.store) is True
@@ -502,3 +507,124 @@ def test_dev_subscription_uses_lan_ip_without_replacing_explicit_base_url(tmp_pa
     with pytest.raises(ValueError,match='Development mode is loopback only'): dev_chosen.validate()
     note=Path('src/app/static/app.js').read_text()
     assert '127.0.0.1 只能由这台电脑访问' in note and '订阅密钥' in note
+
+def login_as(c, token):
+    response=c.post('/api/v1/session',json={'token':token})
+    assert response.status_code==200,response.text
+    c.headers['X-CSRF-Token']=response.json()['csrf_token']
+    return response
+
+def relogin(c, token):
+    c.delete('/api/v1/session')
+    return login_as(c, token)
+
+def test_anonymous_public_calendar(site):
+    c,a,t=site
+    assert c.delete('/api/v1/session').status_code==200
+    home=c.get('/',follow_redirects=False)
+    assert home.status_code==200 and 'session' not in home.headers.get('set-cookie','')
+    status=c.get('/api/v1/status').json()
+    assert status['role'] is None and status['subscription_url'] is None
+    assert c.get('/api/v1/events').status_code==200
+    assert c.get('/api/v1/interests').status_code==200
+    assert c.post('/api/v1/interests',json={'keyword':'匿名','conditions':'','state_epoch':status['state_epoch'],'config_version':status['config_version']}).status_code==401
+    relogin(c,t['admin']);interest(c,'公开演示')
+    assert c.delete('/api/v1/session').status_code==200
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开演示'}
+    assert c.get('/interests',follow_redirects=False).status_code==303
+
+def test_invite_login_is_isolated(site):
+    c,a,t=site
+    interest(c,'公开兴趣')
+    created=c.post('/api/v1/admin/invites',json={'label':'甲'}).json()
+    relogin(c,created['token'])
+    assert c.get('/api/v1/status').json()['role']=='invitee'
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}==set()
+    interest(c,'受邀兴趣')
+    assert c.get('/api/v1/agent/context',headers={'Authorization':'Bearer '+t['agent']}).status_code==403
+    assert c.post('/api/v1/admin/reset',json={'scope':'calendar','confirmation':'RESET','state_epoch':'x','config_version':1}).status_code==403
+    assert c.delete('/api/v1/session').status_code==200
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开兴趣'}
+    relogin(c,t['admin'])
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开兴趣'}
+    assert c.post('/api/v1/admin/session/account',json={'account_id':created['id']}).status_code==200
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'受邀兴趣'}
+    interest(c,'管理员代加')
+    assert c.delete('/api/v1/session').status_code==200
+    home=c.get('/',follow_redirects=False)
+    assert home.status_code==200 and 'session' not in home.headers.get('set-cookie','')
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开兴趣'}
+
+def test_login_token_is_not_calendar_secret(site):
+    c,a,t=site
+    created=c.post('/api/v1/admin/invites',json={'label':'乙'})
+    assert created.status_code==201,created.text
+    created=created.json()
+    publish(a.state.store)
+    with a.state.store.tx() as db:
+        counts=list(db.execute('SELECT account_id,count(*) FROM publications GROUP BY account_id'))
+    assert len(counts)==2 and all(row[1]<=2 for row in counts)
+    secret=created['subscription_url'].rstrip('/').split('/c/')[1].split('/')[0]
+    assert created['token']!=secret and created['token'] not in created['subscription_url']
+    again=c.post('/api/v1/admin/invites/'+created['id']+'/reissue').json()
+    assert again['token']!=created['token'] and again['subscription_url']==created['subscription_url']
+    assert again['token'] not in again['subscription_url']
+    assert c.delete('/api/v1/session').status_code==200
+    assert c.post('/api/v1/session',json={'token':created['token']}).status_code==401
+    relogin(c,again['token'])
+    assert c.get('/api/v1/status').json()['subscription_url']==created['subscription_url']
+
+def test_revoked_invite_cannot_login_and_calendar_is_404(site):
+    from urllib.parse import urlparse
+    c,a,t=site
+    created=c.post('/api/v1/admin/invites',json={'label':'丙'}).json()
+    path=urlparse(created['subscription_url']).path
+    assert c.get(path).status_code==200 and 'BEGIN:VCALENDAR' in c.get(path).text
+    login_as(c,created['token'])
+    saved=c.cookies.get('session')
+    assert saved
+    login_as(c,t['admin'])
+    assert c.post('/api/v1/admin/invites/'+created['id']+'/revoke').status_code==200
+    c.cookies.set('session',saved)
+    assert c.get('/api/v1/status').json()['role'] is None
+    assert c.post('/api/v1/session',json={'token':created['token']}).status_code==401
+    assert c.get(path).status_code==404
+    assert c.get(feed(a)).status_code==200
+
+def test_admin_edits_public_interests(site):
+    c,a,t=site
+    assert c.delete('/api/v1/session').status_code==200
+    assert c.post('/api/v1/interests',json={'keyword':'不行','conditions':'','state_epoch':'x','config_version':1}).status_code==401
+    relogin(c,t['admin'])
+    interest(c,'公开账户兴趣')
+    created=c.post('/api/v1/admin/invites',json={'label':'丁'}).json()
+    relogin(c,created['token'])
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}==set()
+    interest(c,'只属于受邀者')
+    relogin(c,t['admin'])
+    listed={item['keyword'] for item in c.get('/api/v1/interests').json()['items']}
+    assert listed=={'公开账户兴趣'}
+    assert c.delete('/api/v1/session').status_code==200
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开账户兴趣'}
+
+def test_v1_database_opens_as_public_account(tmp_path):
+    import sqlite3
+    from app.storage.database import Store
+    db_path=tmp_path/'calendar.sqlite3'
+    with sqlite3.connect(db_path) as db:
+        db.executescript(Path('src/app/storage/001_initial.sql').read_text())
+        db.execute("INSERT INTO settings(id,state_epoch) VALUES(1,'epoch-1')")
+        db.execute("INSERT INTO interests VALUES('i1','网球','','k','t',NULL)")
+        db.execute('PRAGMA user_version=1')
+    Store(tmp_path,'calendar-secret-value')
+    with sqlite3.connect(db_path) as db:
+        db.row_factory=sqlite3.Row
+        assert db.execute('PRAGMA user_version').fetchone()[0]==2
+        account=db.execute("SELECT * FROM accounts WHERE kind='public'").fetchone()
+        assert account['calendar_token']=='calendar-secret-value' and account['login_hash'] is None
+        assert db.execute('SELECT account_id FROM interests').fetchone()[0]==account['id']
+        assert db.execute('SELECT state_epoch FROM settings').fetchone()[0]=='epoch-1'
+    Store(tmp_path,'rotated-calendar-secret')
+    with sqlite3.connect(db_path) as db:
+        assert db.execute("SELECT calendar_token FROM accounts WHERE kind='public'").fetchone()[0]=='rotated-calendar-secret'
+        assert db.execute('SELECT count(*) FROM accounts').fetchone()[0]==1

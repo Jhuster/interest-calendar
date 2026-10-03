@@ -46,7 +46,9 @@ class Config:
         return origins
 
     def subscription_url(self):
-        token=self.saved_token('calendar')
+        return self.subscription_url_for(self.saved_token('calendar'))
+
+    def subscription_url_for(self, token):
         origin=self._subscription_origin()
         if not token or not origin: return None
         return origin+'/c/'+token+'/calendar.ics'
