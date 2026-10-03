@@ -1,6 +1,6 @@
 import hashlib, json, sqlite3, unicodedata, uuid
 from datetime import timedelta
-from app.config import login_token, subscription_secret, token_hash
+from app.config import agent_secret, login_token, subscription_secret, token_hash
 from app.models.protocol import *
 
 def uid(): return str(uuid.uuid4())
@@ -101,20 +101,20 @@ def receipt(db,row):
     if row['state_epoch']!=s['state_epoch']: result['publication_status']='before_restore'
     return result
 
-def import_batch(store,b):
+def import_batch(store,b,account_id=None):
     bid=b.get('batch_id')
     try: uuid.UUID(bid)
     except (ValueError,TypeError,AttributeError): raise Problem('SCHEMA_INVALID','batch_id 必须是 UUID',path='/batch_id')
     digest=hashlib.sha256(canonical(b).encode()).hexdigest()
-    def prior(db):
-        epoch(db,b.get('state_epoch'))
+    def prior(db, aid):
+        epoch(db,b.get('state_epoch'), aid)
         r=db.execute('SELECT * FROM batches WHERE batch_id=?',(bid,)).fetchone()
         if r and r['payload_hash']!=digest: raise Problem('BATCH_ID_CONFLICT','相同批次 ID 的内容不同',409)
         return r
     try:
         with store.tx(True) as db:
-            aid=account_of(db)
-            r=prior(db)
+            aid=account_of(db, account_id)
+            r=prior(db, aid)
             if r: return receipt(db,r),r['status'] if r['status']>=400 else 200
             batch_check(b); precondition(db,b,aid)
             counts=dict(created=0,updated=0,unchanged=0,candidates=0); maps=[]; cmaps=[]; changed=False; seen=set(); candidate_keys=set()
@@ -150,15 +150,15 @@ def import_batch(store,b):
     except Problem as exc:
         if exc.error['code'] in ('STATE_RESET','BATCH_ID_CONFLICT'): raise
         with store.tx(True) as db:
-            r=prior(db)
+            aid=account_of(db, account_id)
+            r=prior(db, aid)
             if r: return receipt(db,r),r['status'] if r['status']>=400 else 200
             result=dict(batch_id=bid,state_epoch=b['state_epoch'],import_status='rejected',target_revision=None,errors=[exc.error])
-            aid=account_of(db)
             db.execute('INSERT INTO batches VALUES(?,?,?,?,?,?,?,?,?)',(bid,b['state_epoch'],digest,b.get('config_version') if type(b.get('config_version')) is int else None,exc.status,None,canonical(result),stamp(),aid))
             return receipt(db,db.execute('SELECT * FROM batches WHERE batch_id=?',(bid,)).fetchone()),exc.status
 
-def context(db):
-    aid=account_of(db); s=settings(db,aid); today=now().astimezone(TZ).date()
+def context(db, account_id=None):
+    aid=account_of(db, account_id); s=settings(db,aid); today=now().astimezone(TZ).date()
     return dict(server_time=stamp(),state_epoch=s['state_epoch'],config_version=s['config_version'],window={'start_date':str(today),'end_date':str(today+timedelta(days=7))},interests=[without_account(r) for r in db.execute('SELECT * FROM interests WHERE account_id=? AND deleted_at IS NULL ORDER BY created_at,id',(aid,))],events=[exposed(r) for r in db.execute('SELECT * FROM events WHERE account_id=? ORDER BY id',(aid,))],source_mappings=[without_account(r) for r in db.execute('SELECT * FROM event_sources WHERE account_id=? ORDER BY source_namespace,source_id',(aid,))],candidates=[without_account(r)|{'payload':json.loads(r['payload_json'])} for r in db.execute('SELECT * FROM candidates WHERE account_id=? ORDER BY id',(aid,))])
 
 def delete_interest(db,i,b,account_id=None):
@@ -239,8 +239,8 @@ def create_invite(db, label):
     label=label.strip()
     if len(label)>80: raise Problem('SCHEMA_INVALID','备注不超过80字')
     if not label: label='受邀账户'
-    login=login_token(); calendar=subscription_secret(); aid=uid()
-    db.execute('INSERT INTO accounts(id,kind,label,login_hash,calendar_hash,calendar_token,revoked_at,created_at) VALUES(?,?,?,?,?,?,NULL,?)',(aid,'invite',label,token_hash(login),token_hash(calendar),calendar,stamp()))
+    login=login_token(); calendar=subscription_secret(); agent=agent_secret(); aid=uid()
+    db.execute('INSERT INTO accounts(id,kind,label,login_hash,calendar_hash,calendar_token,revoked_at,created_at,agent_hash,agent_token) VALUES(?,?,?,?,?,?,NULL,?,?,?)',(aid,'invite',label,token_hash(login),token_hash(calendar),calendar,stamp(),token_hash(agent),agent))
     db.execute('INSERT INTO settings(account_id,state_epoch) VALUES(?,?)',(aid,str(uuid.uuid4())))
     seed_publication(db,aid)
     return dict(id=aid,label=label,token=login,calendar_token=calendar)

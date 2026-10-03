@@ -1,7 +1,7 @@
 import sqlite3, uuid
 from pathlib import Path
 from contextlib import contextmanager
-from app.config import subscription_secret, token_hash
+from app.config import agent_secret, subscription_secret, token_hash
 from app.models.protocol import stamp
 
 class Store:
@@ -32,7 +32,10 @@ class Store:
             if version==4:
                 _migrate_v4_to_v5(db)
                 version=5
-            if version!=5:
+            if version==5:
+                _migrate_v5_to_v6(db)
+                version=6
+            if version!=6:
                 raise RuntimeError('Unsupported database version')
             _sync_public_calendar(db, calendar_token)
         finally:
@@ -128,6 +131,28 @@ def _migrate_v4_to_v5(db):
                 digest=token_hash(secret)
             db.execute('UPDATE accounts SET calendar_hash=?,calendar_token=? WHERE id=?',(digest,secret,row['id']))
         db.execute('PRAGMA user_version=5')
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK')
+        raise
+
+def _migrate_v5_to_v6(db):
+    db.execute('BEGIN')
+    try:
+        columns=[row[1] for row in db.execute('PRAGMA table_info(accounts)')]
+        if 'agent_token' not in columns:
+            db.execute('ALTER TABLE accounts ADD COLUMN agent_token TEXT')
+            db.execute('ALTER TABLE accounts ADD COLUMN agent_hash TEXT')
+        db.execute('CREATE UNIQUE INDEX IF NOT EXISTS accounts_agent_hash ON accounts(agent_hash) WHERE agent_hash IS NOT NULL')
+        for row in db.execute("SELECT id,agent_token FROM accounts WHERE kind='invite'"):
+            if row['agent_token']: continue
+            secret=agent_secret()
+            digest=token_hash(secret)
+            while db.execute('SELECT 1 FROM accounts WHERE agent_hash=?',(digest,)).fetchone():
+                secret=agent_secret()
+                digest=token_hash(secret)
+            db.execute('UPDATE accounts SET agent_token=?,agent_hash=? WHERE id=?',(secret,digest,row['id']))
+        db.execute('PRAGMA user_version=6')
         db.execute('COMMIT')
     except BaseException:
         db.execute('ROLLBACK')

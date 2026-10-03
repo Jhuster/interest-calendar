@@ -569,8 +569,9 @@ def test_invite_login_is_isolated(site):
     assert me['role']=='invitee' and '/c/' in me['subscription_url']
     personal=me['subscription_url'];secret=personal.rstrip('/').split('/c/')[1].split('/')[0]
     assert created['token']!=secret and secret not in c.get('/').text and 'home-subscribe-url' not in c.get('/').text
-    assert 'href="/admin"' not in c.get('/').text and 'href="/model"' not in c.get('/').text
-    assert c.get('/admin',follow_redirects=False).status_code==403 and c.get('/model',follow_redirects=False).status_code==403
+    assert 'href="/admin"' in c.get('/').text and 'href="/model"' in c.get('/').text
+    assert c.get('/admin',follow_redirects=False).status_code==200 and c.get('/model',follow_redirects=False).status_code==200
+    assert '删除和重置' in c.get('/admin').text and '创建账户' not in c.get('/admin').text and '管理账号' not in c.get('/admin').text
     assert c.get('/api/v1/admin/accounts').status_code==403
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}==set()
     interest(c,'受邀兴趣')
@@ -579,7 +580,7 @@ def test_invite_login_is_isolated(site):
     subscribed=c.get('/subscribe').text
     assert '<h1>日历地址</h1>' in subscribed and '公开日历' not in subscribed and '重试日历发布' not in subscribed
     assert c.get('/api/v1/agent/context',headers={'Authorization':'Bearer '+t['agent']}).status_code==403
-    assert c.post('/api/v1/admin/reset',json={'scope':'calendar','confirmation':'RESET','state_epoch':'x','config_version':1}).status_code==403
+    assert c.post('/api/v1/admin/reset',json={'scope':'calendar','confirmation':'RESET','state_epoch':'x','config_version':1}).status_code==409
     with a.state.store.tx(True) as db:
         db.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?)',('evt-invite','uid-invite',1,0,json.dumps({'title':'受邀者的秘密日程','location':'隐秘地点','status':'confirmed','interest_ids':[],'timing':{'kind':'date','start_date':'2026-10-10','end_date_exclusive':'2026-10-11'},'evidence':[{'url':'https://example.test/hidden'}]}),1,None,'2026-10-03T00:00:00+08:00','2026-10-03T00:00:00+08:00','2026-10-03T00:00:00+08:00',created['id']))
         db.execute('UPDATE settings SET data_revision=data_revision+1 WHERE account_id=?',(created['id'],))
@@ -718,7 +719,7 @@ def test_long_subscription_secret_is_replaced_once(tmp_path):
     Store(tmp_path, config.saved_token('calendar'))
     with sqlite3.connect(tmp_path/'calendar.sqlite3') as db:
         db.row_factory=sqlite3.Row
-        assert db.execute('PRAGMA user_version').fetchone()[0]==5
+        assert db.execute('PRAGMA user_version').fetchone()[0]==6
         row=db.execute('SELECT calendar_token,calendar_hash,login_hash FROM accounts WHERE id=?',(created['id'],)).fetchone()
         secret=row['calendar_token']
         assert len(secret)==16 and secret!=long and row['login_hash']==login_hash and row['calendar_hash']==token_hash(secret)
@@ -733,6 +734,43 @@ def test_long_subscription_secret_is_replaced_once(tmp_path):
         assert c.get('/public/calendar.ics').status_code==200
         assert c.post('/api/v1/session',json={'token':created['token']},headers={'Origin':config.base_url}).status_code==200
 
+def test_each_login_has_model_and_own_admin(site):
+    c,a,t=site
+    interest(c,'公开保留')
+    created=c.post('/api/v1/admin/invites',json={'label':'己'}).json()
+    assert 'agent_token' not in created and 'token' in created
+    relogin(c, created['token'])
+    home=c.get('/').text
+    assert 'href="/model"' in home and 'href="/admin"' in home
+    model=c.get('/model')
+    assert model.status_code==200 and '<h1>大模型</h1>' in model.text and '令牌只在管理员会话中显示' not in model.text and '公共日历' not in model.text
+    console=c.get('/admin')
+    assert console.status_code==200 and '删除和重置' in console.text and '创建账户' not in console.text and '管理账号' not in console.text
+    assert c.get('/api/v1/admin/accounts').status_code==403
+    own=c.get('/api/v1/agent/token').json()['token']
+    assert len(own)==43 and own!=t['agent'] and own not in console.text
+    assert c.get('/api/v1/agent/context',headers={'Authorization':'Bearer '+t['agent']}).status_code==403
+    interest(c,'只属于受邀者')
+    with a.state.store.tx() as db:
+        public_id=db.execute("SELECT id FROM accounts WHERE kind='public'").fetchone()[0]
+    status=c.get('/api/v1/status').json()
+    refused=c.post('/api/v1/admin/reset',json={'scope':'all','confirmation':'RESET','account_id':public_id,'state_epoch':status['state_epoch'],'config_version':status['config_version']})
+    assert refused.status_code==403 and {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'只属于受邀者'}
+    c.delete('/api/v1/session')
+    ctx=c.get('/api/v1/agent/context',headers={'Authorization':'Bearer '+own})
+    assert ctx.status_code==200 and {item['keyword'] for item in ctx.json()['interests']}=={'只属于受邀者'}
+    public_ctx=c.get('/api/v1/agent/context',headers={'Authorization':'Bearer '+t['agent']})
+    assert public_ctx.status_code==200 and {item['keyword'] for item in public_ctx.json()['interests']}=={'公开保留'}
+    relogin(c, created['token'])
+    status=c.get('/api/v1/status').json()
+    cleared=c.post('/api/v1/admin/reset',json={'scope':'all','confirmation':'RESET','state_epoch':status['state_epoch'],'config_version':status['config_version']})
+    assert cleared.status_code==200 and cleared.json()['account_id']!=public_id and 'interests' not in cleared.json()
+    assert c.get('/api/v1/interests').json()['items']==[]
+    relogin(c, t['admin'])
+    assert c.get('/api/v1/agent/token').json()['token']==t['agent']
+    assert own not in c.get('/api/v1/admin/accounts').text and '管理账号' in c.get('/admin').text
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开保留'}
+
 def test_v1_database_opens_as_public_account(tmp_path):
     import sqlite3
     from app.storage.database import Store
@@ -745,7 +783,7 @@ def test_v1_database_opens_as_public_account(tmp_path):
     Store(tmp_path,'calendar-secret-value')
     with sqlite3.connect(db_path) as db:
         db.row_factory=sqlite3.Row
-        assert db.execute('PRAGMA user_version').fetchone()[0]==5
+        assert db.execute('PRAGMA user_version').fetchone()[0]==6
         assert 'login_token' not in [row[1] for row in db.execute('PRAGMA table_info(accounts)')]
         account=db.execute("SELECT * FROM accounts WHERE kind='public'").fetchone()
         assert account['calendar_token']=='calendar-secret-value' and account['login_hash'] is None

@@ -157,7 +157,7 @@ def _validate_backup(path):
     try:
         check=db.execute('PRAGMA integrity_check').fetchone()[0]
         if check!='ok': raise RestoreError('备份完整性检查失败')
-        if db.execute('PRAGMA user_version').fetchone()[0] not in (1,2,3,4,5): raise RestoreError('备份数据库版本不受支持')
+        if db.execute('PRAGMA user_version').fetchone()[0] not in (1,2,3,4,5,6): raise RestoreError('备份数据库版本不受支持')
         count=0
         for row in db.execute('SELECT id,ics_blob FROM publications'):
             try: parsed=Calendar.from_ical(row['ics_blob'])

@@ -87,6 +87,9 @@ def login_token():
 def subscription_secret():
     return secrets.token_urlsafe(12)
 
+def agent_secret():
+    return secrets.token_urlsafe(32)
+
 def _loopback_host(host):
     if not host: return True
     host=host.strip('[]').lower()
@@ -110,7 +113,7 @@ def initialize(config,rotate=None):
     tokens={}
     for role in ('admin','agent','calendar'):
         if role not in existing or rotate==role:
-            if role=='agent': tokens[role]=secrets.token_urlsafe(32)
+            if role=='agent': tokens[role]=agent_secret()
             elif role=='admin': tokens[role]=login_token()
             else: tokens[role]=subscription_secret()
             existing[role]=token_hash(tokens[role])

@@ -108,9 +108,17 @@ def create_app(config=None):
                 sessions.pop(cookie,None);session=None;request.state.clear_session=True
             if session: request.state.role=session['kind'];request.state.session=session
             authorization=request.headers.get('authorization','')
-            if authorization.startswith('Bearer ') and hmac.compare_digest(token_hash(authorization[7:]),credentials['agent']) and (not session or session['kind']!='invitee'): request.state.role='agent'
+            if authorization.startswith('Bearer '):
+                digest=token_hash(authorization[7:])
+                if hmac.compare_digest(digest,credentials['agent']) and (not session or session['kind']!='invitee'):
+                    request.state.role='agent'; request.state.agent_account_id=None
+                elif not session:
+                    with app.state.store.tx() as db:
+                        row=db.execute("SELECT id,agent_hash,revoked_at FROM accounts WHERE kind='invite' AND agent_hash=?",(digest,)).fetchone()
+                    if row and not row['revoked_at'] and row['agent_hash'] and hmac.compare_digest(digest,row['agent_hash']):
+                        request.state.role='agent'; request.state.agent_account_id=row['id']
             if request.url.path=='/settings': raise Problem('NOT_FOUND','页面不存在',404)
-            if request.url.path in ('/admin','/model') and request.state.role!='admin': raise Problem('FORBIDDEN','没有权限查看此页面',403)
+            if request.url.path in ('/admin','/model') and request.state.role not in ('admin','invitee'): raise Problem('FORBIDDEN','没有权限查看此页面',403)
             if not public and not request.state.role:
                 if not request.url.path.startswith('/api/'):
                     redirected=RedirectResponse('/login',303)
@@ -174,6 +182,7 @@ def create_app(config=None):
         return config.subscription_url_for(account['calendar_token'])
     def account_id_for(request, db):
         if request.state.role=='invitee': return request.state.session['account_id']
+        if request.state.role=='agent' and getattr(request.state,'agent_account_id',None): return request.state.agent_account_id
         return db.execute("SELECT id FROM accounts WHERE kind='public'").fetchone()[0]
     @app.post('/api/v1/session')
     async def login(request:Request):
@@ -198,8 +207,12 @@ def create_app(config=None):
     def schema(): return SCHEMA
     @app.get('/api/v1/agent/token')
     def agent_token(request:Request):
-        admin(request)
-        token=config.agent_token()
+        signed_in(request)
+        if request.state.role=='admin':
+            token=config.agent_token()
+        else:
+            with app.state.store.tx() as db:
+                token=db.execute('SELECT agent_token FROM accounts WHERE id=?',(request.state.session['account_id'],)).fetchone()['agent_token']
         if not token: raise Problem('TOKEN_UNAVAILABLE','旧令牌原文已不存在，请在本机重新生成 Agent 令牌后再复制',409)
         return answer(request,{'token':token})
     @app.get('/api/v1/agent/guide')
@@ -209,7 +222,7 @@ def create_app(config=None):
     @app.get('/api/v1/agent/context')
     def get_context(request:Request):
         if request.state.role not in ('admin','agent'): raise Problem('FORBIDDEN','此操作需要管理员或 Agent 凭据',403)
-        with app.state.store.tx() as db: result=context(db)
+        with app.state.store.tx() as db: result=context(db, account_id_for(request, db))
         result.update(schema_url=config.base_url+'/api/v1/agent/schema/1.0',upload_url=config.base_url+'/api/v1/batches')
         return answer(request,result)
     @app.get('/api/v1/interests')
@@ -244,7 +257,7 @@ def create_app(config=None):
         return answer(request,{'ok':True})
     @app.post('/api/v1/admin/reset')
     async def reset_admin(request:Request):
-        admin(request); b=await body(request)
+        signed_in(request); b=await body(request)
         if b.get('confirmation') != 'RESET':
             raise Problem('CONFIRMATION_REQUIRED','请输入 RESET 确认此操作',400)
         with app.state.store.tx(True) as db:
@@ -274,7 +287,9 @@ def create_app(config=None):
         return answer(request,result)
     @app.post('/api/v1/batches')
     async def upload(request:Request):
-        agent(request);rate(('upload','agent'),10);result,status=import_batch(app.state.store,await body(request));return answer(request,result,status)
+        agent(request);rate(('upload','agent'),10)
+        with app.state.store.tx() as db: aid=account_id_for(request, db)
+        result,status=import_batch(app.state.store,await body(request),aid);return answer(request,result,status)
     @app.get('/api/v1/batches')
     def batches(request:Request):
         signed_in(request)
@@ -284,7 +299,7 @@ def create_app(config=None):
     def get_batch(bid:str,request:Request,state_epoch:str|None=None):
         with app.state.store.tx() as db:
             if request.state.role=='agent':
-                epoch(db,state_epoch); aid=account_of(db)
+                aid=account_id_for(request, db); epoch(db,state_epoch,aid)
             elif request.state.role in ('admin','invitee'): aid=account_id_for(request, db)
             else: raise Problem('AUTH_REQUIRED','请先登录',401)
             row=db.execute('SELECT * FROM batches WHERE batch_id=? AND account_id=?',(bid,aid)).fetchone()
@@ -293,7 +308,7 @@ def create_app(config=None):
     @app.get('/api/v1/candidates')
     def candidates(request:Request):
         with app.state.store.tx() as db:
-            if request.state.role=='agent': aid=account_of(db)
+            if request.state.role=='agent': aid=account_id_for(request, db)
             elif request.state.role in ('admin','invitee'): aid=account_id_for(request, db)
             else: raise Problem('AUTH_REQUIRED','请先登录',401)
             rows=[without_account(r)|{'payload':json.loads(r['payload_json'])} for r in db.execute('SELECT * FROM candidates WHERE account_id=? ORDER BY state,id',(aid,))]
@@ -376,7 +391,7 @@ def create_app(config=None):
     @app.get('/candidates',response_class=HTMLResponse)
     @app.get('/runs',response_class=HTMLResponse)
     def page(request:Request):
-        if request.url.path in ('/admin','/model') and request.state.role!='admin':
+        if request.url.path in ('/admin','/model') and request.state.role not in ('admin','invitee'):
             raise Problem('FORBIDDEN','没有权限查看此页面',403)
         if request.url.path not in ('/','/login','/interests','/subscribe') and request.state.role not in ('admin','invitee'):
             raise Problem('FORBIDDEN','此操作需要登录',403)
