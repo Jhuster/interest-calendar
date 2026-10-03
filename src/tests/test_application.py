@@ -465,3 +465,22 @@ def test_calendar_secret_path_and_hidden_from_first_run(tmp_path,capsys):
         assert body.status_code==200 and body.headers['cache-control']=='no-cache' and 'BEGIN:VCALENDAR' in body.text
         assert c.get('/c/'+token+'/calendar.ics',headers={'If-None-Match':body.headers['etag']}).status_code==304
         again=initialize(config);assert again=={} and config.saved_token('calendar')==token
+
+def test_dev_subscription_uses_lan_ip_without_replacing_explicit_base_url(tmp_path,monkeypatch):
+    config=Config(tmp_path,'http://127.0.0.1:9090',True);initialize(config);token=config.saved_token('calendar')
+    monkeypatch.setattr('app.config.detect_local_ip',lambda:'192.168.9.9')
+    with TestClient(create_app(config),base_url=config.base_url) as c:
+        c.headers['Origin']=config.base_url
+        c.headers['X-CSRF-Token']=c.post('/api/v1/session',json={'token':config.saved_token('admin')}).json()['csrf_token']
+        assert c.get('/api/v1/status').json()['subscription_url']=='http://192.168.9.9:9090/c/'+token+'/calendar.ics'
+        assert c.get('/api/v1/status').json()['base_url']=='http://127.0.0.1:9090'
+    monkeypatch.setattr('app.config.detect_local_ip',lambda:'127.0.0.1')
+    assert config.subscription_url() is None
+    def fail(): raise AssertionError('explicit origin must not be detected')
+    monkeypatch.setattr('app.config.detect_local_ip',fail)
+    chosen=Config(tmp_path,'http://10.1.2.3:9000',False)
+    assert chosen.subscription_url()=='http://10.1.2.3:9000/c/'+token+'/calendar.ics'
+    dev_chosen=Config(tmp_path,'http://10.4.5.6:8787',True)
+    assert dev_chosen.subscription_url()=='http://10.4.5.6:8787/c/'+token+'/calendar.ics'
+    note=Path('src/app/static/app.js').read_text()
+    assert '127.0.0.1 只能由这台电脑访问' in note and '订阅密钥' in note

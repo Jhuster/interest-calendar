@@ -27,10 +27,19 @@ class Config:
         return self.saved_token('agent')
 
     def subscription_url(self):
-        if self.development: return None
         token=self.saved_token('calendar')
-        if not token: return None
-        return self.base_url+'/c/'+token+'/calendar.ics'
+        origin=self._subscription_origin()
+        if not token or not origin: return None
+        return origin+'/c/'+token+'/calendar.ics'
+
+    def _subscription_origin(self):
+        url=urlparse(self.base_url)
+        # A configured non-loopback origin is the address the operator chose.
+        if not _loopback_host(url.hostname): return self.base_url
+        if not self.development: return self.base_url
+        detected=detect_local_ip()
+        if _loopback_host(detected): return None
+        return f'{url.scheme}://{detected}:{url.port or 8787}'
 
     def saved_token(self, role):
         credentials=self.credentials()
@@ -47,6 +56,11 @@ class Config:
         return None
 
 def token_hash(token): return hashlib.sha256(token.encode()).hexdigest()
+
+def _loopback_host(host):
+    if not host: return True
+    host=host.strip('[]').lower()
+    return host in ('localhost','::1') or host.startswith('127.')
 
 def detect_local_ip():
     """Best-effort LAN address discovery; never returns a loopback address."""
