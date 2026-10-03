@@ -569,6 +569,7 @@ def test_invite_login_is_isolated(site):
     assert c.post('/api/v1/admin/reset',json={'scope':'calendar','confirmation':'RESET','state_epoch':'x','config_version':1}).status_code==403
     with a.state.store.tx(True) as db:
         db.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?)',('evt-invite','uid-invite',1,0,json.dumps({'title':'受邀者的秘密日程','location':'隐秘地点','status':'confirmed','interest_ids':[],'timing':{'kind':'date','start_date':'2026-10-10','end_date_exclusive':'2026-10-11'},'evidence':[{'url':'https://example.test/hidden'}]}),1,None,'2026-10-03T00:00:00+08:00','2026-10-03T00:00:00+08:00','2026-10-03T00:00:00+08:00',created['id']))
+        db.execute('UPDATE settings SET data_revision=data_revision+1 WHERE account_id=?',(created['id'],))
     assert c.get('/api/v1/events/evt-invite').json()['title']=='受邀者的秘密日程'
     publish(a.state.store)
     assert '受邀者的秘密日程' in c.get(urlparse(personal).path).text
