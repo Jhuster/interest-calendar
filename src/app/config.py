@@ -26,6 +26,12 @@ class Config:
     def agent_token(self):
         return self.saved_token('agent')
 
+    def subscription_url(self):
+        if self.development: return None
+        token=self.saved_token('calendar')
+        if not token: return None
+        return self.base_url+'/c/'+token+'/calendar.ics'
+
     def saved_token(self, role):
         credentials=self.credentials()
         token=credentials.get(role+'_token')
@@ -58,7 +64,7 @@ def initialize(config,rotate=None):
     config.data_dir.mkdir(parents=True,exist_ok=True,mode=0o700)
     path=config.data_dir/'credentials.json';existing=json.loads(path.read_text()) if path.exists() else {}
     tokens={}
-    for role in ('admin','agent'):
+    for role in ('admin','agent','calendar'):
         if role not in existing or rotate==role:
             tokens[role]=secrets.token_urlsafe(32);existing[role]=token_hash(tokens[role])
             existing[role+'_token']=tokens[role]

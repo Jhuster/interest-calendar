@@ -27,23 +27,27 @@ def batch(c,ids):
     p=json.loads(Path('src/examples/protocol/valid-create.json').read_text());p.update(batch_id=str(uuid.uuid4()),state_epoch=ctx['state_epoch'],config_version=ctx['config_version'],collection_started_at=ctx['server_time'],generated_at=now().isoformat(),window=ctx['window'])
     e=p['events'][0];e['source_key']['id']=str(uuid.uuid4());e['interest_ids']=ids;e['timing'].update(start_date=str(d),end_date_exclusive=str(d+timedelta(days=1)));e['evidence'][0]['verified_at']=ctx['server_time'];return p
 def upload(c,t,p):return c.post('/api/v1/batches',json=p,headers={'Authorization':'Bearer '+t['agent']})
+def feed(app):
+    token=app.state.config.saved_token('calendar')
+    assert token
+    return '/c/'+token+'/calendar.ics'
 def renewed(p):
     p=copy.deepcopy(p);p['batch_id']=str(uuid.uuid4());return p
 
 def test_full_lifecycle_and_independent_parser(site):
     c,a,t=site;i=interest(c);p=batch(c,[i]);r=upload(c,t,p);assert r.status_code==202,r.text
-    publish(a.state.store);first=c.get('/calendar.ics');assert len(IndependentCalendar(first.text).events)==1
+    publish(a.state.store);first=c.get(feed(a));assert len(IndependentCalendar(first.text).events)==1
     original=Calendar.from_ical(first.content).walk('VEVENT')[0];eid=r.json()['event_mappings'][0]['event_id']
-    assert c.get('/calendar.ics',headers={'If-None-Match':first.headers['etag']}).status_code==304
-    assert c.head('/calendar.ics').content==b''
+    assert c.get(feed(a),headers={'If-None-Match':first.headers['etag']}).status_code==304
+    assert c.head(feed(a)).content==b''
     assert upload(c,t,p).status_code==200
     q=renewed(p);q['events'][0].update(event_id=eid,base_version=1);q['events'][0]['timing']['start_date']=str((now().astimezone(TZ)+timedelta(days=4)).date());q['events'][0]['timing']['end_date_exclusive']=str((now().astimezone(TZ)+timedelta(days=5)).date())
     assert upload(c,t,q).status_code==202;publish(a.state.store)
-    updated=Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT')[0];assert original['UID']==updated['UID'];assert updated['SEQUENCE']==original['SEQUENCE']+1
+    updated=Calendar.from_ical(c.get(feed(a)).content).walk('VEVENT')[0];assert original['UID']==updated['UID'];assert updated['SEQUENCE']==original['SEQUENCE']+1
     cancel=renewed(q);cancel['events'][0].update(base_version=2,status='cancelled');cancel['events'][0]['evidence'][0]['excerpt']='明确取消（虚构测试）'
     assert upload(c,t,cancel).status_code==202;publish(a.state.store)
-    final=Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT')[0];assert final['STATUS']=='CANCELLED';assert final['UID']==original['UID'];assert final['SEQUENCE']==updated['SEQUENCE']+1
-    empty=renewed(p);empty.update(events=[],result='empty');assert upload(c,t,empty).status_code==200;assert publish(a.state.store);assert len(Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT'))==1
+    final=Calendar.from_ical(c.get(feed(a)).content).walk('VEVENT')[0];assert final['STATUS']=='CANCELLED';assert final['UID']==original['UID'];assert final['SEQUENCE']==updated['SEQUENCE']+1
+    empty=renewed(p);empty.update(events=[],result='empty');assert upload(c,t,empty).status_code==200;assert publish(a.state.store);assert len(Calendar.from_ical(c.get(feed(a)).content).walk('VEVENT'))==1
 
 def test_atomic_rejection_replay_and_stale(site):
     c,a,t=site;i=interest(c);p=batch(c,[i]);bad=copy.deepcopy(p['events'][0]);bad['source_key']['id']='another';bad['interest_ids']=[str(uuid.uuid4())];p['events'].append(bad)
@@ -75,19 +79,19 @@ def test_unfollow_shared_history_and_restore_uid(site):
     assert upload(c,t,r).status_code==202;assert c.get('/api/v1/events/'+hidden['id']).json()['uid']==hidden['uid']
 
 def test_publish_failure_race_restart_and_backup(site,monkeypatch):
-    c,a,t=site;i=interest(c);p=batch(c,[i]);upload(c,t,p);publish(a.state.store);old=c.get('/calendar.ics').content
+    c,a,t=site;i=interest(c);p=batch(c,[i]);upload(c,t,p);publish(a.state.store);old=c.get(feed(a)).content
     q=batch(c,[i]);q['events'][0]['title']='另一个活动';upload(c,t,q)
     import app.services.calendar as module
     original=module.render
     def fail(rows):raise RuntimeError('fault')
     monkeypatch.setattr(module,'render',fail)
     with pytest.raises(RuntimeError):publish(a.state.store)
-    assert c.get('/calendar.ics').content==old
+    assert c.get(feed(a)).content==old
     def raced(rows):
         with a.state.store.tx(True) as db:db.execute('UPDATE settings SET data_revision=data_revision+1')
         return original(rows)
-    monkeypatch.setattr(module,'render',raced);assert publish(a.state.store) is False;assert c.get('/calendar.ics').content==old
-    monkeypatch.setattr(module,'render',original);assert publish(a.state.store);assert c.get('/calendar.ics').content!=old
+    monkeypatch.setattr(module,'render',raced);assert publish(a.state.store) is False;assert c.get(feed(a)).content==old
+    monkeypatch.setattr(module,'render',original);assert publish(a.state.store);assert c.get(feed(a)).content!=old
     backup=a.state.store.backup(force=True);import sqlite3
     with sqlite3.connect(backup) as db:assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok';assert db.execute('SELECT count(*) FROM events').fetchone()[0]==2
 
@@ -149,7 +153,7 @@ def test_optimistic_version_and_evidence_only_sequence(site):
 def test_unknown_end_unicode_and_midnight(site,monkeypatch):
     import app.models.protocol as protocol
     c,a,t=site;i=interest(c);p=batch(c,[i]);day=p['events'][0]['timing']['start_date'];p['events'][0]['title']='中文；逗号,换行\n'+('非常长的日程标题'*15);p['events'][0]['timing']={'kind':'timed','start':day+'T19:00:00-04:00','end':None}
-    assert upload(c,t,p).status_code==202;publish(a.state.store);blob=c.get('/calendar.ics').content
+    assert upload(c,t,p).status_code==202;publish(a.state.store);blob=c.get(feed(a)).content
     assert all(len(line)<=75 for line in blob.split(b'\r\n'));parsed=Calendar.from_ical(blob).walk('VEVENT')[0];assert 'DTEND' not in parsed;assert str(parsed['SUMMARY'])==p['events'][0]['title'];assert len(IndependentCalendar(blob.decode()).events)==1
     sample=json.loads(Path('src/examples/protocol/valid-midnight.json').read_text());monkeypatch.setattr(protocol,'now',lambda:protocol.dt('2026-09-28T00:15:00+08:00'));protocol.batch_check(sample)
 
@@ -162,7 +166,7 @@ def test_postponement_and_restart(tmp_path):
         assert c.post('/api/v1/candidates/'+candidate['id']+'/resolve',json={'state_epoch':p['state_epoch'],'version':1,'action':'withdraw','target_version':1}).status_code==200
         assert c.get('/api/v1/events').json()['total']==0
     with TestClient(create_app(config),base_url=config.base_url) as c:
-        assert len(Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT'))==0
+        assert len(Calendar.from_ical(c.get(feed(app)).content).walk('VEVENT'))==0
         with app.state.store.tx() as db:
             row=db.execute('SELECT * FROM events').fetchone();assert not row['calendar_visible'];assert json.loads(row['payload_json'])['status']=='confirmed';assert row['withdrawal_reason']=='postponed'
 
@@ -178,7 +182,7 @@ def test_multiday_date_shown_on_first_day_and_old_snapshot_refreshed(site):
     p['events'][0]['timing']['end_date_exclusive']=str(start+timedelta(days=30))
     r=upload(c,t,p);assert r.status_code==202
     eid=r.json()['event_mappings'][0]['event_id'];publish(a.state.store)
-    first=c.get('/calendar.ics');e=Calendar.from_ical(first.content).walk('VEVENT')[0]
+    first=c.get(feed(a));e=Calendar.from_ical(first.content).walk('VEVENT')[0]
     assert e.decoded('DTSTART')==start
     assert e.decoded('DTEND')==start+timedelta(days=1)
     assert '共30天' in str(e['SUMMARY'])
@@ -188,7 +192,7 @@ def test_multiday_date_shown_on_first_day_and_old_snapshot_refreshed(site):
         db.execute("UPDATE publications SET ics_blob=replace(CAST(ics_blob AS TEXT), 'X-INTEREST-DISPLAY-VERSION:3', 'X-INTEREST-DISPLAY-VERSION:1')")
         db.execute('UPDATE publications SET ics_blob=CAST(ics_blob AS BLOB)')
     assert publish(a.state.store)
-    assert b'X-INTEREST-DISPLAY-VERSION:3' in c.get('/calendar.ics').content
+    assert b'X-INTEREST-DISPLAY-VERSION:3' in c.get(feed(a)).content
     with a.state.store.tx() as db: count=db.execute('SELECT count(*) FROM publications').fetchone()[0]
     assert publish(a.state.store)
     with a.state.store.tx() as db: assert db.execute('SELECT count(*) FROM publications').fetchone()[0]==count
@@ -203,7 +207,7 @@ def test_admin_reset_atomic_and_stale_request(site,scope):
     assert c.post('/api/v1/admin/reset',json={**body,'scope':'invalid'}).status_code==422
     assert c.get('/api/v1/events').json()['total']==1
     assert c.post('/api/v1/admin/reset',json=body).status_code==200
-    assert not Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT')
+    assert not Calendar.from_ical(c.get(feed(a)).content).walk('VEVENT')
     assert len(c.get('/api/v1/interests').json()['items'])==(1 if scope=='calendar' else 0)
     assert c.post('/api/v1/admin/reset',json=body).status_code==409
     assert upload(c,t,p).json()['errors'][0]['code']=='STATE_RESET'
@@ -214,11 +218,11 @@ def test_subscription_sequence_increases_when_multiday_shortened(site):
     c,a,t=site;i=interest(c);p=batch(c,[i]);start=days(p['events'][0]['timing'])[0]
     p['events'][0]['timing']['end_date_exclusive']=str(start+timedelta(days=30))
     r=upload(c,t,p);publish(a.state.store)
-    before=Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT')[0]
+    before=Calendar.from_ical(c.get(feed(a)).content).walk('VEVENT')[0]
     q=renewed(p);q['events'][0].update(event_id=r.json()['event_mappings'][0]['event_id'],base_version=1)
     q['events'][0]['timing']['end_date_exclusive']=str(start+timedelta(days=1))
     assert upload(c,t,q).status_code==202;publish(a.state.store)
-    after=Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT')[0]
+    after=Calendar.from_ical(c.get(feed(a)).content).walk('VEVENT')[0]
     assert after['UID']==before['UID'] and after['SEQUENCE']>before['SEQUENCE']
 
 
@@ -307,7 +311,7 @@ def test_empty_interest_ids_withdraw_future_event(site):
     eid=r.json()['event_mappings'][0]['event_id'];q=renewed(p);q['events'][0].update(event_id=eid,base_version=1,interest_ids=[])
     assert upload(c,t,q).status_code==202
     assert c.get('/api/v1/events').json()['total']==0
-    publish(a.state.store);assert not Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT')
+    publish(a.state.store);assert not Calendar.from_ical(c.get(feed(a)).content).walk('VEVENT')
     row=c.get('/api/v1/events/'+eid).json();assert not row['calendar_visible'] and row['interest_ids']==[] and row['withdrawal_reason']=='unfollowed'
     fresh=renewed(p);fresh['events'][0].update(event_id=None,base_version=0,interest_ids=[]);fresh['events'][0]['source_key']['id']=str(uuid.uuid4())
     rejected=upload(c,t,fresh);assert rejected.status_code==422 and rejected.json()['errors'][0]['code']=='SCHEMA_INVALID'
@@ -355,7 +359,7 @@ def test_restore_reports_differences_and_keeps_credentials(tmp_path):
         assert batches and all(item['receipt']['publication_status']=='before_restore' for item in batches)
         stale=batch(c,[i]);stale['state_epoch']=epoch
         assert upload(c,{'agent':tokens['agent']},stale).json()['errors'][0]['code']=='STATE_RESET'
-        sequence=Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT')[0]['SEQUENCE']
+        sequence=Calendar.from_ical(c.get(feed(app)).content).walk('VEVENT')[0]['SEQUENCE']
         assert int(sequence)>=restored_sequence+2
     (tmp_path/'calendar.sqlite3').unlink()
     missing=restore_database(tmp_path,backup,apply=True)
@@ -364,3 +368,100 @@ def test_restore_reports_differences_and_keeps_credentials(tmp_path):
     assert '缺少版本基线' in missing['text'] and '数据恢复到备份点' in missing['text']
     garbage=tmp_path/'garbage.sqlite3';garbage.write_bytes(b'not a database')
     with pytest.raises(RestoreError): restore_database(tmp_path,garbage,apply=True)
+
+def test_publications_keep_current_and_previous_only(site):
+    c,a,t=site;i=interest(c);p=batch(c,[i]);r=upload(c,t,p);assert r.status_code==202
+    eid=r.json()['event_mappings'][0]['event_id'];version=1;actives=[];current=p
+    for step in range(3):
+        if step:
+            current=renewed(current);current['events'][0].update(event_id=eid,base_version=version,title=f'第{step}次修订')
+            assert upload(c,t,current).status_code==202;version+=1
+        assert publish(a.state.store) is True
+        with a.state.store.tx() as db: actives.append(db.execute('SELECT active_publication_id FROM settings').fetchone()[0])
+    with a.state.store.tx() as db:
+        ids={row['id'] for row in db.execute('SELECT id FROM publications')}
+        assert ids=={actives[-1],actives[-2]} and actives[0] not in ids
+        assert db.execute('SELECT count(*) FROM events').fetchone()[0]==1
+        assert db.execute('SELECT count(*) FROM batches').fetchone()[0]==3
+
+def test_vacuum_reclaims_pages_and_failure_keeps_snapshot(site,monkeypatch):
+    c,a,t=site;i=interest(c);p=batch(c,[i]);assert upload(c,t,p).status_code==202;assert publish(a.state.store)
+    with a.state.store.tx(True) as db:
+        db.execute('INSERT INTO publications VALUES(?,?,?,?,?)',('big',-1,b'x'*200000,'b'*64,'2000-01-01T00:00:00Z'))
+    with a.state.store.tx() as db: before=db.execute('PRAGMA page_count').fetchone()[0]
+    q=renewed(p);q['events'][0].update(event_id=c.get('/api/v1/events').json()['items'][0]['id'],base_version=1,title='真空修订')
+    assert upload(c,t,q).status_code==202;assert publish(a.state.store) is True
+    with a.state.store.tx() as db:
+        assert db.execute("SELECT count(*) FROM publications WHERE id='big'").fetchone()[0]==0
+        assert db.execute('SELECT count(*) FROM publications').fetchone()[0]==2
+        assert db.execute('PRAGMA freelist_count').fetchone()[0]==0
+        assert db.execute('PRAGMA page_count').fetchone()[0]<before
+    def boom(self): raise OSError('vacuum failed')
+    monkeypatch.setattr('app.storage.database.Store.vacuum',boom)
+    again=renewed(q);again['events'][0].update(base_version=2,title='压缩失败仍发布')
+    assert upload(c,t,again).status_code==202
+    assert publish(a.state.store) is True
+    assert c.get(feed(a)).status_code==200 and '压缩失败仍发布' in c.get(feed(a)).text
+
+def test_reset_vacuums_only_after_success(site,monkeypatch):
+    c,a,t=site;i=interest(c);p=batch(c,[i]);assert upload(c,t,p).status_code==202;publish(a.state.store)
+    calls=[]
+    monkeypatch.setattr('app.storage.database.Store.vacuum',lambda self: calls.append('vacuum'))
+    s=c.get('/api/v1/status').json();body={'scope':'calendar','confirmation':'NO','state_epoch':s['state_epoch'],'config_version':s['config_version']}
+    assert c.post('/api/v1/admin/reset',json=body).status_code==400 and calls==[]
+    body['confirmation']='RESET';assert c.post('/api/v1/admin/reset',json=body).status_code==200 and calls==['vacuum']
+    with a.state.store.tx() as db:
+        assert db.execute('SELECT count(*) FROM events').fetchone()[0]==0
+        assert db.execute('SELECT count(*) FROM batches').fetchone()[0]==0
+        assert db.execute('SELECT count(*) FROM publications').fetchone()[0]==1
+
+def test_restore_copies_and_reports_are_capped(tmp_path):
+    from app.services.maintenance import restore_database
+    from app.storage.database import Store
+    config=Config(tmp_path,'http://127.0.0.1:8787',True);initialize(config);backup=Store(tmp_path).backup(force=True)
+    for _ in range(8): restore_database(tmp_path,backup,apply=False)
+    assert len(list((tmp_path/'restore-reports').glob('*.txt')))==7
+    assert not (tmp_path/'restore-preserved').exists()
+    restore_database(tmp_path,backup,apply=True);restore_database(tmp_path,backup,apply=True)
+    assert len(list((tmp_path/'restore-preserved').glob('*.sqlite3')))==1
+    assert len(list((tmp_path/'restore-reports').glob('*.txt')))==7
+
+def test_open_log_rotates_without_stranding_appends(tmp_path,monkeypatch):
+    from app.services.maintenance import rotate_open_log, rotate_service_log
+    path=tmp_path/'server.log';path.write_bytes(b'x'*80);path.chmod(0o644)
+    handle=open(path,'ab')
+    try:
+        rotate_open_log(path,keep=2,max_bytes=50)
+        handle.write(b'NEW');handle.flush()
+    finally: handle.close()
+    assert path.read_bytes()==b'NEW' and path.stat().st_mode & 0o777==0o600
+    assert (tmp_path/'server.log.1').read_bytes()==b'x'*80
+    path.write_bytes(b'y'*80);rotate_open_log(path,keep=2,max_bytes=50)
+    path.write_bytes(b'z'*80);rotate_open_log(path,keep=2,max_bytes=50)
+    assert (tmp_path/'server.log.1').read_bytes()==b'z'*80 and (tmp_path/'server.log.2').read_bytes()==b'y'*80
+    assert not (tmp_path/'server.log.3').exists()
+    assert rotate_service_log(tmp_path/'missing') is None and not (tmp_path/'missing'/'server.log').exists()
+    monkeypatch.setenv('CALENDAR_LOG_FILE',str(path));path.write_bytes(b'q'*(1024*1024+1))
+    assert rotate_service_log(tmp_path/'ignored')==path
+    assert path.read_bytes()==b'' and (tmp_path/'server.log.1').read_bytes()==b'q'*(1024*1024+1)
+
+def test_calendar_secret_path_and_hidden_from_first_run(tmp_path,capsys):
+    from app.main import calendar_feed
+    assert calendar_feed('/c/abc/calendar.ics') and not calendar_feed('/calendar.ics') and not calendar_feed('/c/abc/other.ics')
+    config=Config(tmp_path,'http://192.168.1.20:8787',False)
+    with TestClient(create_app(config),base_url=config.base_url) as c:
+        output=capsys.readouterr().out
+        token=config.saved_token('calendar')
+        first=(tmp_path/'first-run-credentials.txt').read_text()
+        admin=dict(line.split('=',1) for line in first.splitlines())['ADMIN_TOKEN']
+        assert token and token not in output and token not in first and 'CALENDAR_TOKEN' not in first
+        c.headers['Origin']=config.base_url
+        c.headers['X-CSRF-Token']=c.post('/api/v1/session',json={'token':admin}).json()['csrf_token']
+        assert c.get('/calendar.ics').status_code==404
+        assert c.get('/c/not-the-token/calendar.ics').status_code==404
+        url=c.get('/api/v1/status').json()['subscription_url']
+        assert url==config.subscription_url()=='http://192.168.1.20:8787/c/'+token+'/calendar.ics'
+        body=c.get('/c/'+token+'/calendar.ics')
+        assert body.status_code==200 and body.headers['cache-control']=='no-cache' and 'BEGIN:VCALENDAR' in body.text
+        assert c.get('/c/'+token+'/calendar.ics',headers={'If-None-Match':body.headers['etag']}).status_code==304
+        again=initialize(config);assert again=={} and config.saved_token('calendar')==token

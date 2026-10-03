@@ -15,6 +15,7 @@ LOG_FILE=${CALENDAR_LOG_FILE:-"$DATA_DIR/server.log"}
 mkdir -p "$(dirname -- "$LOG_FILE")"
 export BASE_URL
 export CALENDAR_DATA_DIR="$DATA_DIR"
+export CALENDAR_LOG_FILE="$LOG_FILE"
 command -v uv >/dev/null 2>&1 || { printf '%s\n' '请先运行 bin/init.sh 安装运行依赖。' >&2; exit 1; }
 # Rotate before this launch opens the log. A later rename would not affect the already-open file.
 (cd "$PROJECT_DIR/src" && uv run --locked --no-dev --project "$PROJECT_DIR/src" python -c 'from app.services.maintenance import rotate_log; import sys; rotate_log(sys.argv[1])' "$LOG_FILE")

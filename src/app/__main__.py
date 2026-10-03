@@ -17,14 +17,14 @@ def main():
     parser.add_argument('--base-url',default='http://127.0.0.1:8787')
     parser.add_argument('--backup',help='restore 使用的备份文件')
     parser.add_argument('--apply',action='store_true',help='核对差异报告后执行恢复')
-    parser.add_argument('--cert');parser.add_argument('--key');parser.add_argument('--role',choices=['admin','agent'])
+    parser.add_argument('--cert');parser.add_argument('--key');parser.add_argument('--role',choices=['admin','agent','calendar'])
     a=parser.parse_args();config=Config(Path(a.data_dir),a.base_url,a.dev)
     if a.command in ('init','rotate'):
         if a.command=='rotate' and not a.role: parser.error('rotate requires --role')
         tokens=initialize(config,a.role if a.command=='rotate' else None)
         Store(config.data_dir)
         for role,token in tokens.items(): print(f'{role.upper()}_TOKEN={token}')
-        if not tokens: print('已初始化；如需新凭据，请使用 rotate --role admin 或 agent')
+        if not tokens: print('已初始化；如需新凭据，请使用 rotate --role admin、agent 或 calendar')
     elif a.command=='backup': print(Store(config.data_dir).backup(force=True))
     elif a.command=='restore':
         if not a.backup: parser.error('restore requires --backup')
