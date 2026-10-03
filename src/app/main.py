@@ -32,7 +32,7 @@ def calendar_feed(path):
 def anonymous_ok(path, method):
     if path in ('/login','/health') or calendar_feed(path) or path.startswith('/static/'): return True
     if path=='/api/v1/session' and method=='POST': return True
-    if method in ('GET','HEAD') and path in ('/','/subscribe','/api/v1/events','/api/v1/interests','/api/v1/status'): return True
+    if method in ('GET','HEAD') and path in ('/','/interests','/subscribe','/api/v1/events','/api/v1/interests','/api/v1/status'): return True
     if method in ('GET','HEAD') and path.startswith('/api/v1/events/'): return True
     return False
 
@@ -248,12 +248,19 @@ def create_app(config=None):
         if b.get('confirmation') != 'RESET':
             raise Problem('CONFIRMATION_REQUIRED','请输入 RESET 确认此操作',400)
         with app.state.store.tx(True) as db:
-            aid=account_id_for(request, db);precondition(db,b,aid)
+            chosen=b.get('account_id', None)
+            if chosen is None: aid=account_id_for(request, db)
+            else:
+                if not isinstance(chosen,str) or not chosen: raise Problem('SCHEMA_INVALID','account_id 必须是账户 id')
+                row=db.execute('SELECT id FROM accounts WHERE id=?',(chosen,)).fetchone()
+                if not row: raise Problem('NOT_FOUND','账户不存在',404)
+                aid=row['id']
+            precondition(db,b,aid)
             reset_data(db, b.get('scope'), aid)
             db.execute('INSERT INTO audit_log(operation,created_at,result,request_id) VALUES(?,?,?,?)',('reset',stamp(),b['scope'],request.state.request_id))
         try: app.state.store.vacuum()
         except Exception: logging.getLogger('uvicorn.error').exception('压缩数据库失败')
-        return answer(request,{'ok':True,'scope':b.get('scope')})
+        return answer(request,{'ok':True,'scope':b.get('scope'),'account_id':aid})
     @app.get('/api/v1/events')
     def events(request:Request,interest_id:str|None=None,start_date:str|None=None,end_date:str|None=None,limit:int=50,offset:int=0):
         if not 1<=limit<=200 or offset<0: raise Problem('SCHEMA_INVALID','分页范围错误')
@@ -315,9 +322,25 @@ def create_app(config=None):
         admin(request)
         with app.state.store.tx() as db:
             items=[]
-            for row in db.execute("SELECT id,label,revoked_at,created_at FROM accounts WHERE kind='invite' ORDER BY created_at,id"):
-                items.append(dict(id=row['id'],label=row['label'],revoked_at=row['revoked_at'],created_at=row['created_at']))
+            query='''SELECT a.id,a.kind,a.label,a.revoked_at,a.created_at,s.state_epoch,s.config_version
+                FROM accounts a JOIN settings s ON s.account_id=a.id
+                ORDER BY CASE a.kind WHEN 'public' THEN 0 ELSE 1 END, a.created_at, a.id'''
+            for row in db.execute(query):
+                items.append(dict(id=row['id'],kind=row['kind'],label=row['label'],revoked_at=row['revoked_at'],created_at=row['created_at'],state_epoch=row['state_epoch'],config_version=row['config_version']))
         return answer(request,{'items':items})
+    @app.get('/api/v1/admin/accounts/{aid}/token')
+    def account_token(aid:str,request:Request):
+        admin(request)
+        with app.state.store.tx() as db:
+            row=db.execute('SELECT id,kind,login_token FROM accounts WHERE id=?',(aid,)).fetchone()
+        if not row: raise Problem('NOT_FOUND','账户不存在',404)
+        if row['kind']=='public':
+            token=config.saved_token('admin')
+            if not token: raise Problem('TOKEN_UNAVAILABLE','旧令牌原文已不存在，请在本机重新生成管理令牌后再查看',409)
+        else:
+            token=row['login_token']
+            if not token: raise Problem('TOKEN_UNAVAILABLE','这份登录令牌的原文没有留下，请重新签发后再查看',409)
+        return answer(request,{'token':token})
     @app.post('/api/v1/admin/invites')
     async def add_invite(request:Request):
         admin(request);b=await body(request)
@@ -371,7 +394,7 @@ def create_app(config=None):
     def page(request:Request):
         if request.url.path in ('/admin','/model') and request.state.role!='admin':
             raise Problem('FORBIDDEN','没有权限查看此页面',403)
-        if request.url.path not in ('/','/login','/subscribe') and request.state.role not in ('admin','invitee'):
+        if request.url.path not in ('/','/login','/interests','/subscribe') and request.state.role not in ('admin','invitee'):
             raise Problem('FORBIDDEN','此操作需要登录',403)
         role=request.state.role if request.state.role in ('admin','invitee') else ''
         label='';kind=''

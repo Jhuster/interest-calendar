@@ -77,7 +77,7 @@
 
 ### 4. 订阅到手机
 
-在日程页或「订阅」中复制公开地址，添加到手机日历。地址形如 `http://<局域网IP>:8787/public/calendar.ics`，无需登录。固定路径 `/calendar.ics` 没有内容。受邀用户自己的地址在登录后的「订阅」页，形如 `/c/<token>/calendar.ics`，不要公开。手机需要能访问运行服务的电脑。Android 请使用支持 ICS 订阅的客户端或同步工具。快照、日志和备份的上限见 [存储与部署规格](docs/存储与部署规格.md)。
+在「订阅」页复制日历地址，再按该页的步骤添加到手机。地址不在日程页。未登录时地址形如 `http://<局域网IP>:8787/public/calendar.ics`。固定路径 `/calendar.ics` 没有内容。其他账户登录后，同一页只显示自己的 `/c/<token>/calendar.ics`，不要公开。iOS、Android 和鸿蒙的添加路径不一样，以订阅页为准。快照、日志和备份的上限见 [存储与部署规格](docs/存储与部署规格.md)。
 
 ### 5. 后台运行
 
@@ -101,7 +101,7 @@ BASE_URL=https://calendar.example.com ./bin/start-ecs.sh
 - `BASE_URL` 必须是公网 HTTPS 源。终止 TLS 有两种做法：设置 `CALENDAR_CERT` 和 `CALENDAR_KEY`，脚本会传给已有的 `--cert`/`--key`；或者在反向代理上终止 TLS，由代理转到本机端口。
 - 直接在进程上挂证书、且 `BASE_URL` 没写端口时，进程听的是 8787 而不是 443。这时把地址写成 `https://calendar.example.com:8787`，订阅端口才和监听端口一致。反向代理终止 TLS 时，`BASE_URL` 用浏览器和手机看到的源（通常不带 8787）。
 - 云防火墙或安全组才是公网大门。不要把 8787 以 HTTP 对 `0.0.0.0/0` 开放。
-- 公开订阅地址在日程页和「订阅」页，无需登录，形如 `https://calendar.example.com/public/calendar.ics`，不是 `/calendar.ics`。受邀用户的地址仍是各自的 `/c/<token>/calendar.ics`，只在该用户登录后的「订阅」页。
+- 公开订阅地址只在「订阅」页，无需登录，形如 `https://calendar.example.com/public/calendar.ics`，不是 `/calendar.ics`。其他账户的地址仍是各自的 `/c/<token>/calendar.ics`，只在该用户登录后的「订阅」页。
 - 容器部署用同样的约束，命令见 [运行指南](bin/README.md)。磁盘上限见 [存储与部署规格](docs/存储与部署规格.md)。
 
 ## 进一步了解

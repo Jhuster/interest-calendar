@@ -22,10 +22,13 @@ class Store:
                 version=1
             if version==1:
                 _migrate_v1_to_v2(db, calendar_token)
-            elif version!=2:
+                version=2
+            if version==2:
+                _migrate_v2_to_v3(db)
+                version=3
+            if version!=3:
                 raise RuntimeError('Unsupported database version')
-            else:
-                _sync_public_calendar(db, calendar_token)
+            _sync_public_calendar(db, calendar_token)
         finally:
             db.close()
         self.path.chmod(0o600)
@@ -81,6 +84,18 @@ class Store:
             db.execute('PRAGMA busy_timeout=3000')
             db.execute('VACUUM')
         finally: db.close()
+
+def _migrate_v2_to_v3(db):
+    db.execute('BEGIN')
+    try:
+        columns=[row[1] for row in db.execute('PRAGMA table_info(accounts)')]
+        if 'login_token' not in columns:
+            db.execute('ALTER TABLE accounts ADD COLUMN login_token TEXT')
+        db.execute('PRAGMA user_version=3')
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK')
+        raise
 
 def _sync_public_calendar(db, calendar_token):
     if not calendar_token: return

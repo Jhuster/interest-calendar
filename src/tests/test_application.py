@@ -508,6 +508,7 @@ def test_dev_subscription_uses_lan_ip_without_replacing_explicit_base_url(tmp_pa
     with pytest.raises(ValueError,match='Development mode is loopback only'): dev_chosen.validate()
     note=Path('src/app/static/app.js').read_text()
     assert '127.0.0.1 只能由这台电脑访问' in note and '订阅密钥' in note
+    assert '连续三天' not in note and '监听 0.0.0.0 不是防火墙' not in note
 
 def login_as(c, token):
     response=c.post('/api/v1/session',json={'token':token})
@@ -526,10 +527,15 @@ def test_anonymous_public_calendar(site):
     assert home.status_code==200 and 'session' not in home.headers.get('set-cookie','')
     status=c.get('/api/v1/status').json()
     assert status['role'] is None and status['subscription_url'] and status['subscription_url'].endswith('/public/calendar.ics') and '/c/' not in status['subscription_url']
-    assert 'home-subscribe-url' in home.text and 'href="/subscribe"' in home.text
+    assert 'home-subscribe-url' not in home.text and 'href="/subscribe"' in home.text and '公共日历' not in home.text and '公开日历' not in home.text
     assert 'href="/admin"' not in home.text and 'href="/model"' not in home.text and 'href="/settings"' not in home.text
     subscribe=c.get('/subscribe',follow_redirects=False)
-    assert subscribe.status_code==200 and 'subscribe-url' in subscribe.text and 'session' not in subscribe.headers.get('set-cookie','')
+    assert subscribe.status_code==200 and 'subscribe-url' in subscribe.text and '日历地址' in subscribe.text and 'session' not in subscribe.headers.get('set-cookie','')
+    assert '公开日历' not in subscribe.text and '重试日历发布' not in subscribe.text and '监听 0.0.0.0' not in subscribe.text
+    assert '添加订阅日历' in subscribe.text and '通过网址添加' in subscribe.text and 'CalDAV' in subscribe.text
+    interests_page=c.get('/interests',follow_redirects=False)
+    assert interests_page.status_code==200 and '<h1>兴趣</h1>' in interests_page.text and 'interest-form' not in interests_page.text
+    assert '公共日历' not in interests_page.text and '公开日历' not in interests_page.text and 'session' not in interests_page.headers.get('set-cookie','')
     assert c.get('/admin',follow_redirects=False).status_code==403
     assert c.get('/model',follow_redirects=False).status_code==403
     assert c.get('/settings',follow_redirects=False).status_code==404
@@ -544,7 +550,8 @@ def test_anonymous_public_calendar(site):
     assert c.get('/admin').status_code==200 and c.get('/model').status_code==200
     assert c.delete('/api/v1/session').status_code==200
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开演示'}
-    assert c.get('/interests',follow_redirects=False).status_code==303
+    again=c.get('/interests',follow_redirects=False)
+    assert again.status_code==200 and '<h1>兴趣</h1>' in again.text and 'interest-form' not in again.text
 
 def test_invite_login_is_isolated(site):
     from urllib.parse import urlparse
@@ -564,7 +571,10 @@ def test_invite_login_is_isolated(site):
     assert c.get('/api/v1/admin/accounts').status_code==403
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}==set()
     interest(c,'受邀兴趣')
-    assert '我的兴趣' in c.get('/interests').text and '公共日历的兴趣' not in c.get('/interests').text
+    mine=c.get('/interests').text
+    assert '<h1>兴趣</h1>' in mine and '公共日历' not in mine and '公开日历' not in mine and '我的兴趣' not in mine
+    subscribed=c.get('/subscribe').text
+    assert '<h1>日历地址</h1>' in subscribed and '公开日历' not in subscribed and '重试日历发布' not in subscribed
     assert c.get('/api/v1/agent/context',headers={'Authorization':'Bearer '+t['agent']}).status_code==403
     assert c.post('/api/v1/admin/reset',json={'scope':'calendar','confirmation':'RESET','state_epoch':'x','config_version':1}).status_code==403
     with a.state.store.tx(True) as db:
@@ -578,7 +588,11 @@ def test_invite_login_is_isolated(site):
     assert '受邀者的秘密日程' not in c.get('/public/calendar.ics').text
     relogin(c,t['admin'])
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开兴趣'}
-    assert '公共日历的兴趣' in c.get('/interests').text
+    admin_interests=c.get('/interests').text
+    assert '<h1>兴趣</h1>' in admin_interests and '公共日历' not in admin_interests and '公开日历' not in admin_interests
+    admin_home=c.get('/').text
+    assert '公共日历' not in admin_home and '公开日历' not in admin_home
+    assert '<h1>日历地址</h1>' in c.get('/subscribe').text
     assert c.get('/api/v1/events/evt-invite').status_code==404
     assert all(item.get('title')!='受邀者的秘密日程' for item in c.get('/api/v1/events').json()['items'])
     listed=c.get('/api/v1/admin/accounts')
@@ -645,6 +659,38 @@ def test_admin_edits_public_interests(site):
     assert c.delete('/api/v1/session').status_code==200
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开账户兴趣'}
 
+def test_admin_views_token_and_resets_selected_account(site):
+    c,a,t=site
+    interest(c,'公开保留')
+    created=c.post('/api/v1/admin/invites',json={'label':'戊'}).json()
+    assert 'subscription_url' not in created
+    relogin(c,created['token'])
+    interest(c,'受邀将被清空')
+    relogin(c,t['admin'])
+    page=c.get('/admin').text
+    assert '管理账号' in page and '创建账户' in page and '邀请别人使用自己的日历' not in page and '对方登录后' not in page
+    assert '定期搜索' in c.get('/model').text
+    listed=c.get('/api/v1/admin/accounts')
+    assert listed.status_code==200 and created['token'] not in listed.text and t['admin'] not in listed.text
+    accounts=listed.json()['items']
+    assert accounts[0]['kind']=='public' and all('login_token' not in item and 'subscription_url' not in item for item in accounts)
+    invite=next(item for item in accounts if item['id']==created['id'])
+    viewed=c.get('/api/v1/admin/accounts/'+created['id']+'/token')
+    assert viewed.status_code==200 and viewed.json()['token']==created['token']
+    assert '受邀将被清空' not in viewed.text and 'subscription_url' not in viewed.text
+    own=c.get('/api/v1/admin/accounts/'+accounts[0]['id']+'/token')
+    assert own.status_code==200 and own.json()['token']==t['admin']
+    assert c.get('/api/v1/admin/accounts/missing/token').status_code==404
+    body={'scope':'all','confirmation':'RESET','account_id':invite['id'],'state_epoch':invite['state_epoch'],'config_version':invite['config_version']}
+    reset=c.post('/api/v1/admin/reset',json=body)
+    assert reset.status_code==200 and reset.json()['account_id']==invite['id'] and 'interests' not in reset.json()
+    assert c.post('/api/v1/admin/reset',json={**body,'account_id':'missing'}).status_code==404
+    relogin(c,created['token'])
+    assert c.get('/api/v1/interests').json()['items']==[]
+    relogin(c,t['admin'])
+    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开保留'}
+    assert '受邀将被清空' not in c.get('/api/v1/interests').text
+
 def test_v1_database_opens_as_public_account(tmp_path):
     import sqlite3
     from app.storage.database import Store
@@ -657,7 +703,8 @@ def test_v1_database_opens_as_public_account(tmp_path):
     Store(tmp_path,'calendar-secret-value')
     with sqlite3.connect(db_path) as db:
         db.row_factory=sqlite3.Row
-        assert db.execute('PRAGMA user_version').fetchone()[0]==2
+        assert db.execute('PRAGMA user_version').fetchone()[0]==3
+        assert 'login_token' in [row[1] for row in db.execute('PRAGMA table_info(accounts)')]
         account=db.execute("SELECT * FROM accounts WHERE kind='public'").fetchone()
         assert account['calendar_token']=='calendar-secret-value' and account['login_hash'] is None
         assert db.execute('SELECT account_id FROM interests').fetchone()[0]==account['id']
