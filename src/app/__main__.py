@@ -22,10 +22,10 @@ def main():
     if a.command in ('init','rotate'):
         if a.command=='rotate' and not a.role: parser.error('rotate requires --role')
         tokens=initialize(config,a.role if a.command=='rotate' else None)
-        Store(config.data_dir)
+        Store(config.data_dir, config.saved_token('calendar'))
         for role,token in tokens.items(): print(f'{role.upper()}_TOKEN={token}')
         if not tokens: print('已初始化；如需新凭据，请使用 rotate --role admin、agent 或 calendar')
-    elif a.command=='backup': print(Store(config.data_dir).backup(force=True))
+    elif a.command=='backup': print(Store(config.data_dir, config.saved_token('calendar')).backup(force=True))
     elif a.command=='restore':
         if not a.backup: parser.error('restore requires --backup')
         try: print(restore_database(config.data_dir,a.backup,apply=a.apply)['text'],end='')

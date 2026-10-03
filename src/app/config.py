@@ -46,7 +46,11 @@ class Config:
         return origins
 
     def subscription_url(self):
-        token=self.saved_token('calendar')
+        origin=self._subscription_origin()
+        if not origin: return None
+        return origin+'/public/calendar.ics'
+
+    def subscription_url_for(self, token):
         origin=self._subscription_origin()
         if not token or not origin: return None
         return origin+'/c/'+token+'/calendar.ics'
@@ -76,6 +80,16 @@ class Config:
 
 def token_hash(token): return hashlib.sha256(token.encode()).hexdigest()
 
+def login_token():
+    # 96 bits, always 16 URL-safe characters. Not a short integer, and not the subscription secret.
+    return secrets.token_urlsafe(12)
+
+def subscription_secret():
+    return secrets.token_urlsafe(12)
+
+def agent_secret():
+    return secrets.token_urlsafe(32)
+
 def _loopback_host(host):
     if not host: return True
     host=host.strip('[]').lower()
@@ -99,7 +113,10 @@ def initialize(config,rotate=None):
     tokens={}
     for role in ('admin','agent','calendar'):
         if role not in existing or rotate==role:
-            tokens[role]=secrets.token_urlsafe(32);existing[role]=token_hash(tokens[role])
+            if role=='agent': tokens[role]=agent_secret()
+            elif role=='admin': tokens[role]=login_token()
+            else: tokens[role]=subscription_secret()
+            existing[role]=token_hash(tokens[role])
             existing[role+'_token']=tokens[role]
     if tokens:
         temporary=path.with_suffix('.tmp')
