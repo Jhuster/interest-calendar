@@ -640,6 +640,8 @@ def test_revoked_invite_cannot_login_and_calendar_is_404(site):
     assert saved
     login_as(c,t['admin'])
     assert c.post('/api/v1/admin/invites/'+created['id']+'/revoke').status_code==200
+    listed=c.get('/api/v1/admin/accounts').json()['items']
+    assert created['id'] not in {item['id'] for item in listed} and '丙' not in c.get('/api/v1/admin/accounts').text
     c.cookies.set('session',saved)
     assert c.get('/api/v1/status').json()['role'] is None
     assert c.post('/api/v1/session',json={'token':created['token']}).status_code==401
@@ -674,7 +676,8 @@ def test_admin_cannot_view_tokens_or_reset_another_account(site):
     interest(c,'受邀保留')
     relogin(c,t['admin'])
     page=c.get('/admin').text
-    assert '管理账号' in page and '创建账户' in page and '查看令牌' not in page and 'reset-account' not in page
+    assert '管理账号' in page and '创建账户' in page and '查看令牌' not in page and 'reset-account' not in page and '禁用' not in page
+    assert 'max-height:420px' in Path('src/app/static/style.css').read_text()
     assert '邀请别人使用自己的日历' not in page and '对方登录后' not in page
     listed=c.get('/api/v1/admin/accounts')
     assert listed.status_code==200 and created['token'] not in listed.text and t['admin'] not in listed.text

@@ -4,6 +4,8 @@
 #login-dialog{width:min(420px,calc(100vw - 32px));padding:28px}
 #login-dialog h2{margin-top:0}
 #login-error{color:#ae3434;margin:8px 0 0}
+#account-list{max-height:420px;overflow-y:auto}
+#account-list .panel:last-child{margin-bottom:0}
 .danger-button { background: #ad3434; }
 .danger-button:hover { background: #922a2a; }
 /* Activity details */

@@ -320,6 +320,7 @@ def create_app(config=None):
             items=[]
             query='''SELECT a.id,a.kind,a.label,a.revoked_at,a.created_at,s.state_epoch,s.config_version
                 FROM accounts a JOIN settings s ON s.account_id=a.id
+                WHERE a.revoked_at IS NULL
                 ORDER BY CASE a.kind WHEN 'public' THEN 0 ELSE 1 END, a.created_at, a.id'''
             for row in db.execute(query):
                 items.append(dict(id=row['id'],kind=row['kind'],label=row['label'],revoked_at=row['revoked_at'],created_at=row['created_at'],state_epoch=row['state_epoch'],config_version=row['config_version']))
