@@ -528,13 +528,15 @@ def test_anonymous_public_calendar(site):
     status=c.get('/api/v1/status').json()
     assert status['role'] is None and status['subscription_url'] and status['subscription_url'].endswith('/public/calendar.ics') and '/c/' not in status['subscription_url']
     assert 'home-subscribe-url' not in home.text and 'href="/subscribe"' in home.text and '公共日历' not in home.text and '公开日历' not in home.text
+    assert 'id="open-login"' in home.text and '>登录</button>' in home.text and 'id="logout"' not in home.text and 'href="/login"' not in home.text and 'id="login-dialog"' in home.text
     assert 'href="/admin"' not in home.text and 'href="/model"' not in home.text and 'href="/settings"' not in home.text
     subscribe=c.get('/subscribe',follow_redirects=False)
-    assert subscribe.status_code==200 and 'subscribe-url' in subscribe.text and '日历地址' in subscribe.text and 'session' not in subscribe.headers.get('set-cookie','')
+    assert subscribe.status_code==200 and 'subscribe-url' in subscribe.text and '日历地址' in subscribe.text and 'id="open-login"' in subscribe.text and 'session' not in subscribe.headers.get('set-cookie','')
     assert '公开日历' not in subscribe.text and '重试日历发布' not in subscribe.text and '监听 0.0.0.0' not in subscribe.text
-    assert '添加订阅日历' in subscribe.text and '通过网址添加' in subscribe.text and 'CalDAV' in subscribe.text
+    assert '添加订阅日历' in subscribe.text and '通过网址添加' in subscribe.text
+    assert 'CalDAV' not in subscribe.text and '鸿蒙' not in subscribe.text and '暂不支持' not in subscribe.text
     interests_page=c.get('/interests',follow_redirects=False)
-    assert interests_page.status_code==200 and '<h1>兴趣</h1>' in interests_page.text and 'interest-form' not in interests_page.text
+    assert interests_page.status_code==200 and '<h1>兴趣</h1>' in interests_page.text and 'interest-form' not in interests_page.text and 'id="open-login"' in interests_page.text
     assert '公共日历' not in interests_page.text and '公开日历' not in interests_page.text and 'session' not in interests_page.headers.get('set-cookie','')
     assert c.get('/admin',follow_redirects=False).status_code==403
     assert c.get('/model',follow_redirects=False).status_code==403
@@ -546,7 +548,8 @@ def test_anonymous_public_calendar(site):
     assert c.post('/api/v1/interests',json={'keyword':'匿名','conditions':'','state_epoch':status['state_epoch'],'config_version':status['config_version']}).status_code==401
     assert c.get('/api/v1/admin/accounts').status_code==401
     relogin(c,t['admin']);interest(c,'公开演示')
-    assert 'href="/admin"' in c.get('/').text and 'href="/model"' in c.get('/').text
+    signed=c.get('/').text
+    assert 'href="/admin"' in signed and 'href="/model"' in signed and 'id="logout"' in signed and 'id="open-login"' not in signed
     assert c.get('/admin').status_code==200 and c.get('/model').status_code==200
     assert c.delete('/api/v1/session').status_code==200
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开演示'}
