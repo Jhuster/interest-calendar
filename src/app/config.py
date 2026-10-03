@@ -26,6 +26,25 @@ class Config:
     def agent_token(self):
         return self.saved_token('agent')
 
+    def listen_host(self):
+        # One socket on every interface, including --dev. A loopback-only
+        # socket cannot accept the LAN subscription URL shown to a phone.
+        return '0.0.0.0'
+
+    def allowed_hosts(self):
+        hosts=[]
+        for origin in (self.base_url, self._subscription_origin()):
+            if not origin: continue
+            host=urlparse(origin).hostname
+            if host and host not in hosts: hosts.append(host)
+        return hosts
+
+    def accepted_origins(self):
+        origins=[]
+        for origin in (self.base_url, self._subscription_origin()):
+            if origin and origin not in origins: origins.append(origin)
+        return origins
+
     def subscription_url(self):
         token=self.saved_token('calendar')
         origin=self._subscription_origin()

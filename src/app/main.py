@@ -75,7 +75,7 @@ def create_app(config=None):
             lock.close();sessions.clear();pid_path.unlink(missing_ok=True)
     app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
     app.state.config=config
-    app.add_middleware(TrustedHostMiddleware,allowed_hosts=[urlparse(config.base_url).hostname])
+    app.add_middleware(TrustedHostMiddleware,allowed_hosts=config.allowed_hosts())
     templates=Jinja2Templates(directory=ROOT/'templates')
     app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
     def answer(request,data,status=200):
@@ -101,7 +101,7 @@ def create_app(config=None):
                 raise Problem('AUTH_REQUIRED','请先登录或配置有效 Agent 凭据',401,action='CONTACT_USER')
             if request.method not in ('GET','HEAD','OPTIONS'):
                 if request.state.role!='agent':
-                    if request.headers.get('origin')!=config.base_url: raise Problem('FORBIDDEN','请求来源不匹配',403)
+                    if request.headers.get('origin') not in config.accepted_origins(): raise Problem('FORBIDDEN','请求来源不匹配',403)
                     if request.state.role=='admin' and not hmac.compare_digest(request.headers.get('x-csrf-token',''),session['csrf']): raise Problem('FORBIDDEN','页面凭据已过期，请刷新',403)
                 if request.headers.get('content-encoding'): raise Problem('SCHEMA_INVALID','不支持压缩上传',415)
                 chunks=[];size=0

@@ -39,5 +39,5 @@ def main():
         from urllib.parse import urlparse
         from app.main import create_app
         logging.getLogger('uvicorn.error').addFilter(HideListenAddress())
-        uvicorn.run(create_app(config),host='127.0.0.1' if a.dev else '0.0.0.0',port=urlparse(a.base_url).port or 8787,ssl_certfile=a.cert,ssl_keyfile=a.key,access_log=False,workers=1)
+        uvicorn.run(create_app(config),host=config.listen_host(),port=urlparse(a.base_url).port or 8787,ssl_certfile=a.cert,ssl_keyfile=a.key,access_log=False,workers=1)
 if __name__=='__main__': main()

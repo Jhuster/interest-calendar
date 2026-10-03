@@ -468,19 +468,37 @@ def test_calendar_secret_path_and_hidden_from_first_run(tmp_path,capsys):
 
 def test_dev_subscription_uses_lan_ip_without_replacing_explicit_base_url(tmp_path,monkeypatch):
     config=Config(tmp_path,'http://127.0.0.1:9090',True);initialize(config);token=config.saved_token('calendar')
+    assert config.listen_host()=='0.0.0.0'
+    serve=Path('src/app/__main__.py').read_text()
+    assert 'host=config.listen_host()' in serve and 'port=urlparse(a.base_url).port or 8787' in serve
     monkeypatch.setattr('app.config.detect_local_ip',lambda:'192.168.9.9')
+    lan='http://192.168.9.9:9090'
     with TestClient(create_app(config),base_url=config.base_url) as c:
         c.headers['Origin']=config.base_url
         c.headers['X-CSRF-Token']=c.post('/api/v1/session',json={'token':config.saved_token('admin')}).json()['csrf_token']
-        assert c.get('/api/v1/status').json()['subscription_url']=='http://192.168.9.9:9090/c/'+token+'/calendar.ics'
+        assert c.get('/api/v1/status').json()['subscription_url']==lan+'/c/'+token+'/calendar.ics'
         assert c.get('/api/v1/status').json()['base_url']=='http://127.0.0.1:9090'
+        phone={'Host':'192.168.9.9:9090'}
+        body=c.get('/c/'+token+'/calendar.ics',headers=phone)
+        assert body.status_code==200 and 'BEGIN:VCALENDAR' in body.text
+        assert c.get('/calendar.ics',headers=phone).status_code==404
+        assert c.get('/c/not-the-token/calendar.ics',headers=phone).status_code==404
+        assert c.get('/c/'+token+'/calendar.ics',headers={'Host':'203.0.113.50:9090'}).status_code==400
+        assert c.post('/api/v1/session',json={'token':config.saved_token('admin')},headers={**phone,'Origin':lan}).status_code==200
+        assert c.post('/api/v1/session',json={'token':config.saved_token('admin')},headers={**phone,'Origin':'https://evil.test'}).status_code==403
     monkeypatch.setattr('app.config.detect_local_ip',lambda:'127.0.0.1')
-    assert config.subscription_url() is None
+    assert config.subscription_url() is None and config.listen_host()=='0.0.0.0'
+    assert config.allowed_hosts()==['127.0.0.1'] and config.accepted_origins()==['http://127.0.0.1:9090']
+    with TestClient(create_app(config),base_url=config.base_url) as missed:
+        assert missed.get('/c/'+token+'/calendar.ics',headers={'Host':'192.168.9.9:9090'}).status_code==400
+        assert missed.get('/c/'+token+'/calendar.ics').status_code==200
     def fail(): raise AssertionError('explicit origin must not be detected')
     monkeypatch.setattr('app.config.detect_local_ip',fail)
     chosen=Config(tmp_path,'http://10.1.2.3:9000',False)
     assert chosen.subscription_url()=='http://10.1.2.3:9000/c/'+token+'/calendar.ics'
+    assert chosen.listen_host()=='0.0.0.0' and chosen.allowed_hosts()==['10.1.2.3']
     dev_chosen=Config(tmp_path,'http://10.4.5.6:8787',True)
     assert dev_chosen.subscription_url()=='http://10.4.5.6:8787/c/'+token+'/calendar.ics'
+    with pytest.raises(ValueError,match='Development mode is loopback only'): dev_chosen.validate()
     note=Path('src/app/static/app.js').read_text()
     assert '127.0.0.1 只能由这台电脑访问' in note and '订阅密钥' in note
