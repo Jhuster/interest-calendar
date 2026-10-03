@@ -1,4 +1,4 @@
-import asyncio, fcntl, hmac, secrets, sqlite3, time
+import asyncio, fcntl, hmac, secrets, sqlite3, sys, time
 import logging
 import os
 from collections import defaultdict, deque
@@ -16,6 +16,7 @@ from app.models.protocol import *
 from app.storage.database import Store
 from app.services.domain import *
 from app.services.calendar import publish
+from app.services.maintenance import record_backup, startup_token_message
 
 ROOT=Path(__file__).parent
 
@@ -41,29 +42,31 @@ def create_app(config=None):
         try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:
             lock.close();raise RuntimeError('This data directory is already served by another process')
-        admin_token=config.saved_token('admin')
-        if admin_token:
-            print('管理令牌：'+admin_token,flush=True)
-        else:
-            print('管理令牌原文不可恢复，请使用已保存令牌或在本机轮换管理令牌。',flush=True)
-        app.state.store=Store(config.data_dir);attempt_publish()
-        logging.getLogger('uvicorn.error').info('浏览器访问地址：%s/', config.base_url.rstrip('/'))
-        async def worker():
-            delay=5
-            while True:
-                await asyncio.sleep(delay)
-                await asyncio.to_thread(attempt_publish)
-                try: await asyncio.to_thread(app.state.store.backup)
-                except Exception: pass
-                with app.state.store.tx() as db: failed=settings(db)['publish_error']
-                delay=min(300,30 if delay==5 else delay*4) if failed else 5
-        task=asyncio.create_task(worker())
-        try: yield
+        task=None
+        pid_path=config.data_dir/'server.pid'
+        try:
+            credential_path=config.data_dir/'credentials.json'
+            print(startup_token_message(config.saved_token('admin'),credential_path.resolve(),sys.stdout.isatty()),flush=True)
+            app.state.store=Store(config.data_dir);app.state.backup_error=None;attempt_publish();record_backup(app.state.store,app.state)
+            pid_path.write_text(str(os.getpid())+'\n')
+            pid_path.chmod(0o600)
+            logging.getLogger('uvicorn.error').info('浏览器访问地址：%s/', config.base_url.rstrip('/'))
+            async def worker():
+                delay=5
+                while True:
+                    await asyncio.sleep(delay)
+                    await asyncio.to_thread(attempt_publish)
+                    await asyncio.to_thread(record_backup,app.state.store,app.state)
+                    with app.state.store.tx() as db: failed=settings(db)['publish_error']
+                    delay=min(300,30 if delay==5 else delay*4) if failed else 5
+            task=asyncio.create_task(worker())
+            yield
         finally:
-            task.cancel()
-            try: await task
-            except asyncio.CancelledError: pass
-            lock.close();sessions.clear()
+            if task:
+                task.cancel()
+                try: await task
+                except asyncio.CancelledError: pass
+            lock.close();sessions.clear();pid_path.unlink(missing_ok=True)
     app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
     app.state.config=config
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=[urlparse(config.base_url).hostname])
@@ -160,9 +163,11 @@ def create_app(config=None):
         admin(request)
         with app.state.store.tx() as db:
             result=context(db)
+            active_ids={item['id'] for item in result['interests']}
             for interest in result['interests']:
                 matching=[e for e in result['events'] if interest['id'] in e['interest_ids'] and future(e)]
-                interest['future_count']=len(matching);interest['exclusive_count']=sum(len(e['interest_ids'])==1 for e in matching)
+                interest['future_count']=len(matching)
+                interest['exclusive_count']=sum(not any(other in e['interest_ids'] for other in active_ids if other!=interest['id']) for e in matching)
             return answer(request,{'items':result['interests'],'state_epoch':result['state_epoch'],'config_version':result['config_version']})
     @app.post('/api/v1/interests')
     async def add_interest(request:Request):
@@ -231,7 +236,7 @@ def create_app(config=None):
         admin(request)
         with app.state.store.tx() as db:
             s=settings(db);pub=db.execute('SELECT data_revision,created_at FROM publications WHERE id=?',(s['active_publication_id'],)).fetchone()
-            s.update(published_revision=pub['data_revision'] if pub else -1,published_at=pub['created_at'] if pub else None,candidate_count=db.execute("SELECT count(*) FROM candidates WHERE state='pending'").fetchone()[0],last_received=db.execute('SELECT max(received_at) FROM batches').fetchone()[0],last_imported=db.execute('SELECT max(received_at) FROM batches WHERE status<400').fetchone()[0],base_url=config.base_url,subscription_url=None if config.development else config.base_url+'/calendar.ics',development=config.development)
+            s.update(published_revision=pub['data_revision'] if pub else -1,published_at=pub['created_at'] if pub else None,candidate_count=db.execute("SELECT count(*) FROM candidates WHERE state='pending'").fetchone()[0],last_received=db.execute('SELECT max(received_at) FROM batches').fetchone()[0],last_imported=db.execute('SELECT max(received_at) FROM batches WHERE status<400').fetchone()[0],base_url=config.base_url,subscription_url=None if config.development else config.base_url+'/calendar.ics',development=config.development,backup_error=app.state.backup_error)
         return answer(request,s)
     @app.post('/api/v1/publications/retry')
     async def retry(request:Request):

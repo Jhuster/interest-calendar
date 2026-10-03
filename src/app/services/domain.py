@@ -148,12 +148,13 @@ def context(db):
 
 def delete_interest(db,i,b):
     precondition(db,b);active(db,[i]);changed=False
+    # Mark it deleted first so save_event keeps the id as an archived association.
+    # Exclusive future events become hidden; shared ones stay visible with the label.
+    db.execute('UPDATE interests SET deleted_at=? WHERE id=?',(stamp(),i))
     for row in list(db.execute('SELECT * FROM events')):
         p=json.loads(row['payload_json'])
         if i not in p['interest_ids'] or not future(p): continue
-        p['interest_ids'].remove(i)
-        _,ch,_=save_event(db,p,dict(row),reason='unfollow',force_visible=bool(p['interest_ids']));changed|=ch
-    db.execute('UPDATE interests SET deleted_at=? WHERE id=?',(stamp(),i))
+        _,ch,_=save_event(db,p,dict(row),reason='unfollow');changed|=ch
     db.execute('UPDATE settings SET config_version=config_version+1,data_revision=data_revision+?',(int(changed),))
 
 def reset_data(db, scope):

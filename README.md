@@ -57,7 +57,7 @@
 ./bin/start.sh
 ```
 
-在浏览器打开控制台显示的地址，使用首次启动时打印的管理令牌登录。
+在浏览器打开控制台显示的地址。前台启动时终端会显示管理令牌；令牌原文保存在 `bin/data/credentials.json`。
 
 ### 2. 添加兴趣，连接 Agent
 
@@ -85,7 +85,7 @@
 ./bin/start-background.sh
 ```
 
-日志：`bin/data/server.log`。更多配置见 [运行指南](bin/README.md)。
+日志：`bin/data/server.log`（自动轮转，且不记录管理令牌）。停止、备份和恢复见 [运行指南](bin/README.md)。
 
 ## 进一步了解
 

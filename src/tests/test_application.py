@@ -88,7 +88,7 @@ def test_publish_failure_race_restart_and_backup(site,monkeypatch):
         return original(rows)
     monkeypatch.setattr(module,'render',raced);assert publish(a.state.store) is False;assert c.get('/calendar.ics').content==old
     monkeypatch.setattr(module,'render',original);assert publish(a.state.store);assert c.get('/calendar.ics').content!=old
-    backup=a.state.store.backup();import sqlite3
+    backup=a.state.store.backup(force=True);import sqlite3
     with sqlite3.connect(backup) as db:assert db.execute('PRAGMA integrity_check').fetchone()[0]=='ok';assert db.execute('SELECT count(*) FROM events').fetchone()[0]==2
 
 def test_candidates_duplicate_reject_reopen_merge(site):
@@ -122,8 +122,11 @@ def test_first_start_token_and_http_login(tmp_path,capsys):
     with TestClient(create_app(config),base_url=config.base_url) as c:
         credentials=tmp_path/'first-run-credentials.txt'
         token=dict(line.split('=',1) for line in credentials.read_text().splitlines())['ADMIN_TOKEN']
-        assert token in capsys.readouterr().out
+        output=capsys.readouterr().out
+        assert token not in output
+        assert '凭据文件' in output
         assert credentials.stat().st_mode & 0o777 == 0o600
+        assert config.saved_token('admin')==token
         assert c.get('/api/v1/status').status_code==401
         assert c.get('/',follow_redirects=False).status_code==303
         response=c.post('/api/v1/session',json={'token':token},headers={'Origin':config.base_url})
@@ -131,7 +134,9 @@ def test_first_start_token_and_http_login(tmp_path,capsys):
         assert 'Secure' not in response.headers['set-cookie']
         assert c.get('/api/v1/status').status_code==200
     with TestClient(create_app(config),base_url=config.base_url):
-        assert token in capsys.readouterr().out
+        output=capsys.readouterr().out
+        assert token not in output
+        assert config.saved_token('admin')==token
 
 def test_optimistic_version_and_evidence_only_sequence(site):
     c,a,t=site;i=interest(c);p=batch(c,[i]);r=upload(c,t,p);eid=r.json()['event_mappings'][0]['event_id'];q=renewed(p);q['events'][0].update(event_id=eid,base_version=1);q['events'][0]['evidence'][0]['excerpt']='重新核验，时间未变化'
@@ -230,3 +235,132 @@ def test_saved_admin_token_restart_rotation_and_legacy(tmp_path):
     assert config.saved_token('admin')==tokens['admin']
     rotated=initialize(config,'admin')
     assert config.saved_token('admin')==rotated['admin']!=tokens['admin']
+
+def test_startup_token_stays_out_of_noninteractive_output():
+    from io import StringIO
+    from app.services.maintenance import startup_token_message
+    class Tty(StringIO):
+        def isatty(self): return True
+    token='secret-admin-token'
+    assert token in startup_token_message(token,Path('/tmp/credentials.json'),Tty().isatty())
+    hidden=startup_token_message(token,Path('/tmp/credentials.json'),StringIO().isatty())
+    assert token not in hidden and '凭据文件' in hidden
+
+def test_backup_failure_is_visible(tmp_path,caplog,monkeypatch):
+    import logging
+    from app.services.maintenance import record_backup
+    config=Config(tmp_path,'http://127.0.0.1:8787',True);tokens=initialize(config)
+    def boom(self,force=False): raise OSError('disk full')
+    monkeypatch.setattr('app.storage.database.Store.backup',boom)
+    with caplog.at_level(logging.ERROR,logger='uvicorn.error'):
+        with TestClient(create_app(config),base_url=config.base_url) as c:
+            assert '备份失败' in caplog.text and 'disk full' in caplog.text
+            logged=len([r for r in caplog.records if r.message=='备份失败'])
+            c.headers['Origin']=config.base_url
+            c.headers['X-CSRF-Token']=c.post('/api/v1/session',json={'token':tokens['admin']}).json()['csrf_token']
+            assert c.get('/api/v1/status').json()['backup_error']=='disk full'
+            state=type('State',(),{'backup_error':'disk full'})()
+            class Failed:
+                def backup(self,force=False): raise OSError('disk full')
+            record_backup(Failed(),state)
+            assert state.backup_error=='disk full'
+            assert len([r for r in caplog.records if r.message=='备份失败'])==logged
+
+def test_log_rotation_permissions(tmp_path):
+    from app.services.maintenance import rotate_log
+    path=tmp_path/'server.log';path.write_text('x'*80);path.chmod(0o644)
+    rotate_log(path,keep=2,max_bytes=50)
+    assert path.read_text()=='' and path.stat().st_mode & 0o777==0o600
+    assert (tmp_path/'server.log.1').read_text()=='x'*80 and (tmp_path/'server.log.1').stat().st_mode & 0o777==0o600
+    path.write_text('y'*80);rotate_log(path,keep=2,max_bytes=50)
+    assert (tmp_path/'server.log.1').read_text()=='y'*80 and (tmp_path/'server.log.2').read_text()=='x'*80
+    path.write_text('z'*80);rotate_log(path,keep=2,max_bytes=50)
+    assert (tmp_path/'server.log.1').read_text()=='z'*80 and (tmp_path/'server.log.2').read_text()=='y'*80
+    assert not (tmp_path/'server.log.3').exists()
+    path.write_text('ok');path.chmod(0o644);rotate_log(path,keep=2,max_bytes=50)
+    assert path.read_text()=='ok' and path.stat().st_mode & 0o777==0o600
+
+def test_deleted_interest_remains_archived_on_future_events(site):
+    c,a,t=site;i=interest(c);j=interest(c,'共享兴趣');today=now().astimezone(TZ).date();p=batch(c,[i])
+    exclusive=p['events'][0];exclusive['title']='独占未来活动'
+    shared=copy.deepcopy(exclusive);shared['source_key']=dict(shared['source_key'],id=str(uuid.uuid4()));shared['title']='共享未来活动';shared['interest_ids']=[i,j]
+    current=copy.deepcopy(exclusive);current['source_key']=dict(current['source_key'],id=str(uuid.uuid4()));current['title']='今天的活动';current['interest_ids']=[i]
+    current['timing']={'kind':'date','start_date':str(today),'end_date_exclusive':str(today+timedelta(days=1))}
+    p['events']=[exclusive,shared,current];p['generated_at']=now().isoformat();assert upload(c,t,p).status_code==202
+    s=c.get('/api/v1/status').json()
+    assert c.request('DELETE','/api/v1/interests/'+i,json={'state_epoch':s['state_epoch'],'config_version':s['config_version']}).status_code==200
+    visible={e['title']:e for e in c.get('/api/v1/events').json()['items']}
+    assert '独占未来活动' not in visible and i in visible['共享未来活动']['interest_ids'] and j in visible['共享未来活动']['interest_ids']
+    assert i in visible['今天的活动']['interest_ids'] and visible['今天的活动']['calendar_visible']
+    listed={item['keyword']:item for item in c.get('/api/v1/interests').json()['items']}
+    assert '共享兴趣' in listed and i not in {item['id'] for item in listed.values()}
+    assert listed['共享兴趣']['exclusive_count']==1
+    ctx=c.get('/api/v1/agent/context').json();hidden=next(e for e in ctx['events'] if e['title']=='独占未来活动')
+    assert not hidden['calendar_visible'] and i in hidden['interest_ids']
+    shared_row=next(e for e in ctx['events'] if e['title']=='共享未来活动');q=batch(c,[j]);proposal=copy.deepcopy(shared)
+    proposal.update(event_id=shared_row['id'],base_version=shared_row['version'],interest_ids=[j]);q['events']=[proposal]
+    assert upload(c,t,q).status_code in (200,202)
+    again=c.get('/api/v1/events/'+shared_row['id']).json();assert i in again['interest_ids'] and j in again['interest_ids']
+
+def test_empty_interest_ids_withdraw_future_event(site):
+    c,a,t=site;i=interest(c);p=batch(c,[i]);r=upload(c,t,p);assert r.status_code==202
+    eid=r.json()['event_mappings'][0]['event_id'];q=renewed(p);q['events'][0].update(event_id=eid,base_version=1,interest_ids=[])
+    assert upload(c,t,q).status_code==202
+    assert c.get('/api/v1/events').json()['total']==0
+    publish(a.state.store);assert not Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT')
+    row=c.get('/api/v1/events/'+eid).json();assert not row['calendar_visible'] and row['interest_ids']==[] and row['withdrawal_reason']=='unfollowed'
+    fresh=renewed(p);fresh['events'][0].update(event_id=None,base_version=0,interest_ids=[]);fresh['events'][0]['source_key']['id']=str(uuid.uuid4())
+    rejected=upload(c,t,fresh);assert rejected.status_code==422 and rejected.json()['errors'][0]['code']=='SCHEMA_INVALID'
+
+def test_restore_reports_differences_and_keeps_credentials(tmp_path):
+    import sqlite3
+    from app.services.maintenance import RestoreError, restore_database
+    config=Config(tmp_path,'http://127.0.0.1:8787',True);tokens=initialize(config);app=create_app(config)
+    with TestClient(app,base_url=config.base_url) as c:
+        c.headers['Origin']=config.base_url;c.headers['X-CSRF-Token']=c.post('/api/v1/session',json={'token':tokens['admin']}).json()['csrf_token']
+        i=interest(c);p=batch(c,[i]);p['events'][0]['title']='备份点活动';assert upload(c,tokens,p).status_code==202
+        publish(app.state.store);backup=app.state.store.backup(force=True);epoch=c.get('/api/v1/status').json()['state_epoch']
+        extra=batch(c,[i]);extra['events'][0]['title']='备份后的活动';assert upload(c,tokens,extra).status_code==202
+        ctx=c.get('/api/v1/agent/context').json();original=next(e for e in ctx['events'] if e['title']=='备份点活动')
+        withdrawn=renewed(p);withdrawn['events'][0].update(event_id=original['id'],base_version=original['version'],interest_ids=[],title='备份点活动')
+        assert upload(c,tokens,withdrawn).status_code==202
+        with app.state.store.tx() as db: current_sequence=db.execute('SELECT sequence FROM events WHERE id=?',(original['id'],)).fetchone()[0]
+        with pytest.raises(RestoreError,match='停止'): restore_database(tmp_path,backup,apply=True)
+    rotated=initialize(config,'admin');credentials=(tmp_path/'credentials.json').read_bytes()
+    preview=restore_database(tmp_path,backup,apply=False)
+    assert preview['applied'] is False and preview['baseline']=='present' and '尚未修改' in preview['text']
+    assert any(item['title']=='备份后的活动' for item in preview['lost_uids'])
+    assert any(item['policy']=='保留' and not item['current_visible'] and item['restored_visible'] for item in preview['withdrawals'])
+    assert any(item['to_sequence']==item['known_max']+1 and item['to_sequence']>current_sequence for item in preview['sequence_adjustments'])
+    assert preview['source_aliases']['lost']
+    with sqlite3.connect(tmp_path/'calendar.sqlite3') as db: assert db.execute('SELECT state_epoch FROM settings').fetchone()[0]==epoch
+    report=restore_database(tmp_path,backup,apply=True)
+    assert report['applied'] is True and report['credentials_restored'] is False and report['state_epoch']!=epoch
+    assert (tmp_path/'credentials.json').read_bytes()==credentials
+    assert '高于已知最大值' in report['text'] and '旧令牌不会复活' in report['text']
+    assert Path(report['preserved']).exists() and Path(report['report_path']).stat().st_mode & 0o777==0o600
+    with sqlite3.connect(report['preserved']) as db: assert db.execute("SELECT count(*) FROM events WHERE payload_json LIKE '%备份后的活动%'").fetchone()[0]==1
+    with sqlite3.connect(tmp_path/'calendar.sqlite3') as db:
+        assert db.execute("SELECT count(*) FROM events WHERE payload_json LIKE '%备份后的活动%'").fetchone()[0]==0
+        restored_sequence=db.execute('SELECT sequence FROM events WHERE uid=?',(original['uid'],)).fetchone()[0]
+    assert restored_sequence>current_sequence
+    with TestClient(create_app(config),base_url=config.base_url) as c:
+        c.headers['Origin']=config.base_url
+        assert c.post('/api/v1/session',json={'token':tokens['admin']}).status_code==401
+        c.headers['X-CSRF-Token']=c.post('/api/v1/session',json={'token':rotated['admin']}).json()['csrf_token']
+        assert c.get('/api/v1/status').json()['state_epoch']==report['state_epoch']
+        titles={e['title'] for e in c.get('/api/v1/events').json()['items']}
+        assert '备份点活动' in titles and '备份后的活动' not in titles
+        batches=c.get('/api/v1/batches').json()['items']
+        assert batches and all(item['receipt']['publication_status']=='before_restore' for item in batches)
+        stale=batch(c,[i]);stale['state_epoch']=epoch
+        assert upload(c,{'agent':tokens['agent']},stale).json()['errors'][0]['code']=='STATE_RESET'
+        sequence=Calendar.from_ical(c.get('/calendar.ics').content).walk('VEVENT')[0]['SEQUENCE']
+        assert int(sequence)>=restored_sequence+2
+    (tmp_path/'calendar.sqlite3').unlink()
+    missing=restore_database(tmp_path,backup,apply=True)
+    assert missing['baseline']=='missing' and missing['summary']=='数据恢复到备份点。'
+    assert any('不能承诺手机无重复或状态无倒退' in item for item in missing['limitations'])
+    assert '缺少版本基线' in missing['text'] and '数据恢复到备份点' in missing['text']
+    garbage=tmp_path/'garbage.sqlite3';garbage.write_bytes(b'not a database')
+    with pytest.raises(RestoreError): restore_database(tmp_path,garbage,apply=True)
