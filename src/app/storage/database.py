@@ -36,15 +36,27 @@ class Store:
             raise
         finally: db.close()
 
-    def backup(self):
+    def backup(self, force=False):
         folder=self.directory/'backups'
         folder.mkdir(exist_ok=True,mode=0o700)
-        target=folder/(stamp()[:10]+'.sqlite3')
-        if not target.exists():
-            temporary=target.with_suffix('.tmp')
-            with self.connect() as source, sqlite3.connect(temporary) as dest:
-                source.backup(dest)
-            temporary.chmod(0o600)
-            temporary.replace(target)
-        for old in sorted(folder.glob('*.sqlite3'))[:-7]: old.unlink()
+        daily=folder/(stamp()[:10]+'.sqlite3')
+        # The running service keeps one automatic copy per UTC day. A manual backup
+        # still writes a new snapshot when that copy already exists.
+        if daily.exists() and not force:
+            self._prune_backups(folder)
+            return daily
+        target=daily
+        if daily.exists():
+            moment=stamp()
+            target=folder/(moment[:10]+'T'+moment[11:19].replace(':','')+'Z.sqlite3')
+            if target.exists(): target=folder/(target.stem+'-'+uuid.uuid4().hex[:8]+target.suffix)
+        temporary=target.with_suffix('.tmp')
+        with self.connect() as source, sqlite3.connect(temporary) as dest:
+            source.backup(dest)
+        temporary.chmod(0o600)
+        temporary.replace(target)
+        self._prune_backups(folder)
         return target
+
+    def _prune_backups(self, folder):
+        for old in sorted(folder.glob('*.sqlite3'))[:-7]: old.unlink()
