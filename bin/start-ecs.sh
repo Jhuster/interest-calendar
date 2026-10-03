@@ -1,5 +1,5 @@
 #!/bin/sh
-# 阿里云 ECS 等公网机器的前台启动。不探测局域网地址，不传应用的 --dev。
+# ECS 或其它云虚拟机的前台启动。不探测局域网地址，不传应用的 --dev。
 # 监听仍是程序默认：0.0.0.0，端口取自 BASE_URL，缺省 8787。本机请用 start.sh。
 set -eu
 BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -55,7 +55,7 @@ unset VIRTUAL_ENV
 cd "$PROJECT_DIR/src"
 
 printf '%s\n' '监听仍是程序默认的 0.0.0.0，端口取自 BASE_URL，未写端口时为 8787。本脚本不改绑定，也不传 --dev。' >&2
-printf '%s\n' '安全组才是公网大门。订阅地址在设置页，形如 '"${BASE_URL%/}"'/c/<token>/calendar.ics，不是 /calendar.ics。' >&2
+printf '%s\n' '云防火墙或安全组才是公网大门。订阅地址在设置页，形如 '"${BASE_URL%/}"'/c/<token>/calendar.ics，不是 /calendar.ics。' >&2
 if [ -n "${CALENDAR_CERT:-}" ]; then
   printf '%s\n' '将使用 --cert/--key 在进程上终止 TLS。未写端口时手机应访问 8787 上的 HTTPS，或把 BASE_URL 写成带端口的源。' >&2
 else

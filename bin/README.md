@@ -36,9 +36,9 @@ BASE_URL=http://192.168.1.20:8787 ./bin/start-background.sh
 
 初始化需要网络和 curl 或 wget，使用 uv 官方安装源：https://docs.astral.sh/uv/getting-started/installation/ 。脚本可重复运行，项目依赖位于 `src/.venv/`，不会重置数据库。
 
-## 阿里云 ECS
+## 云主机
 
-不要在公网机器上使用 `start.sh` 或 `start-background.sh`。它们会在缺少 `BASE_URL` 时写成局域网 HTTP 地址。
+不要在公网机器（ECS 或其它云虚拟机）上使用 `start.sh` 或 `start-background.sh`。它们会在缺少 `BASE_URL` 时写成局域网 HTTP 地址。
 
 ```sh
 BASE_URL=https://calendar.example.com ./bin/start-ecs.sh
@@ -55,7 +55,7 @@ CALENDAR_KEY=/etc/interest-calendar/privkey.pem \
 
 - 监听仍是程序默认的 `0.0.0.0`。端口来自 `BASE_URL`，缺省 8787。脚本不另外绑定网卡，也不传 `--dev`。
 - `BASE_URL` 必须是公网 HTTPS 源。未提供 `CALENDAR_CERT`/`CALENDAR_KEY` 时，由反向代理终止 TLS，再转到本机上的该端口。
-- 安全组才是公网大门。不要把 8787 以 HTTP 对 `0.0.0.0/0` 开放。
+- 云防火墙或安全组才是公网大门。不要把 8787 以 HTTP 对 `0.0.0.0/0` 开放。
 - 登录后的设置页给出订阅地址，形如 `https://calendar.example.com/c/<token>/calendar.ics`。不是 `/calendar.ics`。
 - 应用进程本身仍接受 HTTP 启动，以便本机局域网用法不变。拒绝非 https 的是这条 ECS 脚本，不是程序。细节见 `docs/存储与部署规格.md`。
 
@@ -107,7 +107,7 @@ uv run --directory ../src python -m app restore --data-dir ../bin/data --backup 
 docker run -d --name interest-calendar --log-opt max-size=1m --log-opt max-file=7 -p 8787:8787 -e BASE_URL=http://192.168.1.20:8787 -v interest-calendar-data:/opt/interest-calendar/bin/data interest-calendar:local
 ```
 
-公网 ECS 不要照搬上面这条。`BASE_URL` 必须是公网 HTTPS 源，并且不要把 8787 以 HTTP 对 `0.0.0.0/0` 开放。安全组才是大门。
+公网云主机不要照搬上面这条。`BASE_URL` 必须是公网 HTTPS 源，并且不要把 8787 以 HTTP 对 `0.0.0.0/0` 开放。云防火墙或安全组才是大门。
 
 反向代理终止 TLS 时，只把容器端口绑到宿主机回环，由代理对外提供 HTTPS：
 
@@ -115,7 +115,7 @@ docker run -d --name interest-calendar --log-opt max-size=1m --log-opt max-file=
 docker run -d --name interest-calendar --log-opt max-size=1m --log-opt max-file=7 -p 127.0.0.1:8787:8787 -e BASE_URL=https://calendar.example.com -v interest-calendar-data:/opt/interest-calendar/bin/data interest-calendar:local
 ```
 
-`BASE_URL` 没写端口时，容器内仍听 8787。代理把公网 443 转到 `127.0.0.1:8787`。安全组放行 443，不放行 8787。
+`BASE_URL` 没写端口时，容器内仍听 8787。代理把公网 443 转到 `127.0.0.1:8787`。云防火墙或安全组放行 443，不放行 8787。
 
 在进程上终止 TLS 时，同时挂上证书和私钥。入口只有两个变量都存在才追加 `--cert`/`--key`：
 
@@ -123,4 +123,4 @@ docker run -d --name interest-calendar --log-opt max-size=1m --log-opt max-file=
 docker run -d --name interest-calendar --log-opt max-size=1m --log-opt max-file=7 -p 8787:8787 -e BASE_URL=https://calendar.example.com:8787 -e CALENDAR_CERT=/certs/fullchain.pem -e CALENDAR_KEY=/certs/privkey.pem -v /etc/interest-calendar:/certs:ro -v interest-calendar-data:/opt/interest-calendar/bin/data interest-calendar:local
 ```
 
-这条会在宿主机所有网卡上发布 8787，但客户端必须用 HTTPS。安全组不要再对 `0.0.0.0/0` 放行同一端口的明文 HTTP。首次启动后保存令牌，并删除数据卷里的 `first-run-credentials.txt`。细节见 `docs/存储与部署规格.md`。
+这条会在宿主机所有网卡上发布 8787，但客户端必须用 HTTPS。云防火墙或安全组不要再对 `0.0.0.0/0` 放行同一端口的明文 HTTP。首次启动后保存令牌，并删除数据卷里的 `first-run-credentials.txt`。细节见 `docs/存储与部署规格.md`。

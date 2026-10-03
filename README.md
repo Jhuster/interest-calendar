@@ -53,7 +53,7 @@
 
 ### 1. 在自己的电脑上启动
 
-下面两条命令只用于本机和可信局域网。它们不传应用的 `--dev`。未设置 `BASE_URL` 时，脚本探测局域网地址并使用 HTTP。公网 ECS 不要用它们，见文末的 ECS 一节。
+下面两条命令只用于本机和可信局域网。未设置 `BASE_URL` 时，脚本探测局域网地址并使用 HTTP。公网云主机不要用它们，见文末的云主机一节。
 
 ```sh
 ./bin/start.sh
@@ -89,9 +89,9 @@
 
 日志：`bin/data/server.log`（启动前和运行中自动轮转，且不记录管理令牌）。停止、备份和恢复见 [运行指南](bin/README.md)。
 
-### 6. 阿里云 ECS
+### 6. 云主机
 
-公网机器用另一条启动路径，不要用上面的本机脚本，也不要靠它们探测局域网 IP。
+公网机器（ECS 或其它云虚拟机）用另一条启动路径，不要用上面的本机脚本，也不要靠它们探测局域网 IP。
 
 ```sh
 BASE_URL=https://calendar.example.com ./bin/start-ecs.sh
@@ -100,7 +100,7 @@ BASE_URL=https://calendar.example.com ./bin/start-ecs.sh
 - 监听仍是程序默认：所有网卡，端口取自 `BASE_URL`，没有写端口时是 8787。脚本不改绑定，也不传 `--dev`。`--dev` 只用于开发；它要求配置的 `BASE_URL` 是回环地址，但进程同样听 `0.0.0.0`，并不是只绑 `127.0.0.1`。
 - `BASE_URL` 必须是公网 HTTPS 源。终止 TLS 有两种做法：设置 `CALENDAR_CERT` 和 `CALENDAR_KEY`，脚本会传给已有的 `--cert`/`--key`；或者在反向代理上终止 TLS，由代理转到本机端口。
 - 直接在进程上挂证书、且 `BASE_URL` 没写端口时，进程听的是 8787 而不是 443。这时把地址写成 `https://calendar.example.com:8787`，订阅端口才和监听端口一致。反向代理终止 TLS 时，`BASE_URL` 用浏览器和手机看到的源（通常不带 8787）。
-- 安全组才是公网大门。不要把 8787 以 HTTP 对 `0.0.0.0/0` 开放。
+- 云防火墙或安全组才是公网大门。不要把 8787 以 HTTP 对 `0.0.0.0/0` 开放。
 - 订阅地址仍在登录后的设置页，形如 `https://calendar.example.com/c/<token>/calendar.ics`，不是 `/calendar.ics`。
 - 容器部署用同样的约束，命令见 [运行指南](bin/README.md)。磁盘上限见 [存储与部署规格](docs/存储与部署规格.md)。
 
