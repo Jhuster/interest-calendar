@@ -28,9 +28,8 @@ def batch(c,ids):
     e=p['events'][0];e['source_key']['id']=str(uuid.uuid4());e['interest_ids']=ids;e['timing'].update(start_date=str(d),end_date_exclusive=str(d+timedelta(days=1)));e['evidence'][0]['verified_at']=ctx['server_time'];return p
 def upload(c,t,p):return c.post('/api/v1/batches',json=p,headers={'Authorization':'Bearer '+t['agent']})
 def feed(app):
-    token=app.state.config.saved_token('calendar')
-    assert token
-    return '/c/'+token+'/calendar.ics'
+    assert app.state.config.saved_token('calendar')
+    return '/public/calendar.ics'
 def renewed(p):
     p=copy.deepcopy(p);p['batch_id']=str(uuid.uuid4());return p
 
@@ -61,7 +60,7 @@ def test_atomic_rejection_replay_and_stale(site):
 
 def test_privileges_origin_revocation_and_private_paths(site):
     c,a,t=site
-    for path in ['/data/calendar.sqlite3','/credentials.json','/docs','/openapi.json']:
+    for path in ['/data/calendar.sqlite3','/credentials.json','/docs','/openapi.json','/settings']:
         assert c.get(path).status_code==404
     no=c.post('/api/v1/interests',json={},headers={'X-CSRF-Token':'bad'});assert no.status_code==403
     assert c.post('/api/v1/interests',json={},headers={'Origin':'https://evil.test'}).status_code==403
@@ -115,7 +114,7 @@ def test_json_limits_and_html_escape(site):
     for raw in ['{"a":1,"a":2}','{"a":NaN}','[]']:
         assert c.post('/api/v1/batches',content=raw,headers=h).status_code==400
     assert c.post('/api/v1/batches',content=b'x'*(2*1024*1024+1),headers=h).status_code==413
-    for path in ['/','/interests','/settings','/candidates','/runs']:
+    for path in ['/','/interests','/subscribe','/model','/admin','/candidates','/runs']:
         r=c.get(path);assert r.status_code==200;assert '<html lang="zh-CN">' in r.text;assert 'Content-Security-Policy' in r.headers
 
 def test_contract_examples():
@@ -134,7 +133,7 @@ def test_first_start_token_and_http_login(tmp_path,capsys):
         assert credentials.stat().st_mode & 0o777 == 0o600
         assert config.saved_token('admin')==token
         anonymous=c.get('/api/v1/status');assert anonymous.status_code==200
-        assert anonymous.json()['role'] is None and anonymous.json()['subscription_url'] is None
+        assert anonymous.json()['role'] is None and anonymous.json()['subscription_url']=='http://192.168.1.20:8787/public/calendar.ics'
         home=c.get('/',follow_redirects=False);assert home.status_code==200
         assert 'session' not in home.headers.get('set-cookie','')
         response=c.post('/api/v1/session',json={'token':token},headers={'Origin':config.base_url})
@@ -452,7 +451,7 @@ def test_open_log_rotates_without_stranding_appends(tmp_path,monkeypatch):
 
 def test_calendar_secret_path_and_hidden_from_first_run(tmp_path,capsys):
     from app.main import calendar_feed
-    assert calendar_feed('/c/abc/calendar.ics') and not calendar_feed('/calendar.ics') and not calendar_feed('/c/abc/other.ics')
+    assert calendar_feed('/public/calendar.ics') and calendar_feed('/c/abc/calendar.ics') and not calendar_feed('/calendar.ics') and not calendar_feed('/c/abc/other.ics')
     config=Config(tmp_path,'http://192.168.1.20:8787',False)
     with TestClient(create_app(config),base_url=config.base_url) as c:
         output=capsys.readouterr().out
@@ -465,10 +464,11 @@ def test_calendar_secret_path_and_hidden_from_first_run(tmp_path,capsys):
         assert c.get('/calendar.ics').status_code==404
         assert c.get('/c/not-the-token/calendar.ics').status_code==404
         url=c.get('/api/v1/status').json()['subscription_url']
-        assert url==config.subscription_url()=='http://192.168.1.20:8787/c/'+token+'/calendar.ics'
-        body=c.get('/c/'+token+'/calendar.ics')
+        assert url==config.subscription_url()=='http://192.168.1.20:8787/public/calendar.ics'
+        assert c.get('/c/'+token+'/calendar.ics').status_code==404
+        body=c.get('/public/calendar.ics')
         assert body.status_code==200 and body.headers['cache-control']=='no-cache' and 'BEGIN:VCALENDAR' in body.text
-        assert c.get('/c/'+token+'/calendar.ics',headers={'If-None-Match':body.headers['etag']}).status_code==304
+        assert c.get('/public/calendar.ics',headers={'If-None-Match':body.headers['etag']}).status_code==304
         again=initialize(config);assert again=={} and config.saved_token('calendar')==token
 
 def test_dev_subscription_uses_lan_ip_without_replacing_explicit_base_url(tmp_path,monkeypatch):
@@ -481,29 +481,30 @@ def test_dev_subscription_uses_lan_ip_without_replacing_explicit_base_url(tmp_pa
     with TestClient(create_app(config),base_url=config.base_url) as c:
         c.headers['Origin']=config.base_url
         c.headers['X-CSRF-Token']=c.post('/api/v1/session',json={'token':config.saved_token('admin')}).json()['csrf_token']
-        assert c.get('/api/v1/status').json()['subscription_url']==lan+'/c/'+token+'/calendar.ics'
+        assert c.get('/api/v1/status').json()['subscription_url']==lan+'/public/calendar.ics'
         assert c.get('/api/v1/status').json()['base_url']=='http://127.0.0.1:9090'
         phone={'Host':'192.168.9.9:9090'}
-        body=c.get('/c/'+token+'/calendar.ics',headers=phone)
+        body=c.get('/public/calendar.ics',headers=phone)
         assert body.status_code==200 and 'BEGIN:VCALENDAR' in body.text
+        assert c.get('/c/'+token+'/calendar.ics',headers=phone).status_code==404
         assert c.get('/calendar.ics',headers=phone).status_code==404
         assert c.get('/c/not-the-token/calendar.ics',headers=phone).status_code==404
-        assert c.get('/c/'+token+'/calendar.ics',headers={'Host':'203.0.113.50:9090'}).status_code==400
+        assert c.get('/public/calendar.ics',headers={'Host':'203.0.113.50:9090'}).status_code==400
         assert c.post('/api/v1/session',json={'token':config.saved_token('admin')},headers={**phone,'Origin':lan}).status_code==200
         assert c.post('/api/v1/session',json={'token':config.saved_token('admin')},headers={**phone,'Origin':'https://evil.test'}).status_code==403
     monkeypatch.setattr('app.config.detect_local_ip',lambda:'127.0.0.1')
     assert config.subscription_url() is None and config.listen_host()=='0.0.0.0'
     assert config.allowed_hosts()==['127.0.0.1'] and config.accepted_origins()==['http://127.0.0.1:9090']
     with TestClient(create_app(config),base_url=config.base_url) as missed:
-        assert missed.get('/c/'+token+'/calendar.ics',headers={'Host':'192.168.9.9:9090'}).status_code==400
-        assert missed.get('/c/'+token+'/calendar.ics').status_code==200
+        assert missed.get('/public/calendar.ics',headers={'Host':'192.168.9.9:9090'}).status_code==400
+        assert missed.get('/public/calendar.ics').status_code==200
     def fail(): raise AssertionError('explicit origin must not be detected')
     monkeypatch.setattr('app.config.detect_local_ip',fail)
     chosen=Config(tmp_path,'http://10.1.2.3:9000',False)
-    assert chosen.subscription_url()=='http://10.1.2.3:9000/c/'+token+'/calendar.ics'
+    assert chosen.subscription_url()=='http://10.1.2.3:9000/public/calendar.ics'
     assert chosen.listen_host()=='0.0.0.0' and chosen.allowed_hosts()==['10.1.2.3']
     dev_chosen=Config(tmp_path,'http://10.4.5.6:8787',True)
-    assert dev_chosen.subscription_url()=='http://10.4.5.6:8787/c/'+token+'/calendar.ics'
+    assert dev_chosen.subscription_url()=='http://10.4.5.6:8787/public/calendar.ics'
     with pytest.raises(ValueError,match='Development mode is loopback only'): dev_chosen.validate()
     note=Path('src/app/static/app.js').read_text()
     assert '127.0.0.1 只能由这台电脑访问' in note and '订阅密钥' in note
@@ -524,32 +525,65 @@ def test_anonymous_public_calendar(site):
     home=c.get('/',follow_redirects=False)
     assert home.status_code==200 and 'session' not in home.headers.get('set-cookie','')
     status=c.get('/api/v1/status').json()
-    assert status['role'] is None and status['subscription_url'] is None
+    assert status['role'] is None and status['subscription_url'] and status['subscription_url'].endswith('/public/calendar.ics') and '/c/' not in status['subscription_url']
+    assert 'home-subscribe-url' in home.text and 'href="/subscribe"' in home.text
+    assert 'href="/admin"' not in home.text and 'href="/model"' not in home.text and 'href="/settings"' not in home.text
+    subscribe=c.get('/subscribe',follow_redirects=False)
+    assert subscribe.status_code==200 and 'subscribe-url' in subscribe.text and 'session' not in subscribe.headers.get('set-cookie','')
+    assert c.get('/admin',follow_redirects=False).status_code==403
+    assert c.get('/model',follow_redirects=False).status_code==403
+    assert c.get('/settings',follow_redirects=False).status_code==404
+    public=c.get('/public/calendar.ics')
+    assert public.status_code==200 and 'BEGIN:VCALENDAR' in public.text
     assert c.get('/api/v1/events').status_code==200
     assert c.get('/api/v1/interests').status_code==200
     assert c.post('/api/v1/interests',json={'keyword':'匿名','conditions':'','state_epoch':status['state_epoch'],'config_version':status['config_version']}).status_code==401
+    assert c.get('/api/v1/admin/accounts').status_code==401
     relogin(c,t['admin']);interest(c,'公开演示')
+    assert 'href="/admin"' in c.get('/').text and 'href="/model"' in c.get('/').text
+    assert c.get('/admin').status_code==200 and c.get('/model').status_code==200
     assert c.delete('/api/v1/session').status_code==200
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开演示'}
     assert c.get('/interests',follow_redirects=False).status_code==303
 
 def test_invite_login_is_isolated(site):
+    from urllib.parse import urlparse
     c,a,t=site
     interest(c,'公开兴趣')
-    created=c.post('/api/v1/admin/invites',json={'label':'甲'}).json()
+    created_response=c.post('/api/v1/admin/invites',json={'label':'甲'})
+    assert created_response.status_code==201
+    created=created_response.json()
+    assert 'subscription_url' not in created and 'calendar_token' not in created
     relogin(c,created['token'])
-    assert c.get('/api/v1/status').json()['role']=='invitee'
+    me=c.get('/api/v1/status').json()
+    assert me['role']=='invitee' and '/c/' in me['subscription_url']
+    personal=me['subscription_url'];secret=personal.rstrip('/').split('/c/')[1].split('/')[0]
+    assert created['token']!=secret and secret not in c.get('/').text and 'home-subscribe-url' not in c.get('/').text
+    assert 'href="/admin"' not in c.get('/').text and 'href="/model"' not in c.get('/').text
+    assert c.get('/admin',follow_redirects=False).status_code==403 and c.get('/model',follow_redirects=False).status_code==403
+    assert c.get('/api/v1/admin/accounts').status_code==403
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}==set()
     interest(c,'受邀兴趣')
+    assert '我的兴趣' in c.get('/interests').text and '公共日历的兴趣' not in c.get('/interests').text
     assert c.get('/api/v1/agent/context',headers={'Authorization':'Bearer '+t['agent']}).status_code==403
     assert c.post('/api/v1/admin/reset',json={'scope':'calendar','confirmation':'RESET','state_epoch':'x','config_version':1}).status_code==403
+    with a.state.store.tx(True) as db:
+        db.execute('INSERT INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?)',('evt-invite','uid-invite',1,0,json.dumps({'title':'受邀者的秘密日程','location':'隐秘地点','status':'confirmed','interest_ids':[],'timing':{'kind':'date','start_date':'2026-10-10','end_date_exclusive':'2026-10-11'},'evidence':[{'url':'https://example.test/hidden'}]}),1,None,'2026-10-03T00:00:00+08:00','2026-10-03T00:00:00+08:00','2026-10-03T00:00:00+08:00',created['id']))
+    assert c.get('/api/v1/events/evt-invite').json()['title']=='受邀者的秘密日程'
+    publish(a.state.store)
+    assert '受邀者的秘密日程' in c.get(urlparse(personal).path).text
     assert c.delete('/api/v1/session').status_code==200
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开兴趣'}
+    assert '受邀者的秘密日程' not in c.get('/public/calendar.ics').text
     relogin(c,t['admin'])
     assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'公开兴趣'}
-    assert c.post('/api/v1/admin/session/account',json={'account_id':created['id']}).status_code==200
-    assert {item['keyword'] for item in c.get('/api/v1/interests').json()['items']}=={'受邀兴趣'}
-    interest(c,'管理员代加')
+    assert '公共日历的兴趣' in c.get('/interests').text
+    assert c.get('/api/v1/events/evt-invite').status_code==404
+    assert all(item.get('title')!='受邀者的秘密日程' for item in c.get('/api/v1/events').json()['items'])
+    listed=c.get('/api/v1/admin/accounts')
+    assert listed.status_code==200 and secret not in listed.text and 'subscription_url' not in listed.text
+    assert c.post('/api/v1/admin/session/account',json={'account_id':created['id']}).status_code==404
+    assert c.get('/api/v1/status').json()['subscription_url'].endswith('/public/calendar.ics') and secret not in c.get('/api/v1/status').text
     assert c.delete('/api/v1/session').status_code==200
     home=c.get('/',follow_redirects=False)
     assert home.status_code==200 and 'session' not in home.headers.get('set-cookie','')
@@ -560,27 +594,30 @@ def test_login_token_is_not_calendar_secret(site):
     created=c.post('/api/v1/admin/invites',json={'label':'乙'})
     assert created.status_code==201,created.text
     created=created.json()
+    assert 'subscription_url' not in created and 'calendar_token' not in created
     publish(a.state.store)
     with a.state.store.tx() as db:
         counts=list(db.execute('SELECT account_id,count(*) FROM publications GROUP BY account_id'))
     assert len(counts)==2 and all(row[1]<=2 for row in counts)
-    secret=created['subscription_url'].rstrip('/').split('/c/')[1].split('/')[0]
-    assert created['token']!=secret and created['token'] not in created['subscription_url']
+    relogin(c,created['token'])
+    url=c.get('/api/v1/status').json()['subscription_url']
+    secret=url.rstrip('/').split('/c/')[1].split('/')[0]
+    assert created['token']!=secret and created['token'] not in url
+    relogin(c,t['admin'])
     again=c.post('/api/v1/admin/invites/'+created['id']+'/reissue').json()
-    assert again['token']!=created['token'] and again['subscription_url']==created['subscription_url']
-    assert again['token'] not in again['subscription_url']
+    assert again['token']!=created['token'] and 'subscription_url' not in again and secret not in c.get('/api/v1/admin/accounts').text
     assert c.delete('/api/v1/session').status_code==200
     assert c.post('/api/v1/session',json={'token':created['token']}).status_code==401
     relogin(c,again['token'])
-    assert c.get('/api/v1/status').json()['subscription_url']==created['subscription_url']
+    assert c.get('/api/v1/status').json()['subscription_url']==url
 
 def test_revoked_invite_cannot_login_and_calendar_is_404(site):
     from urllib.parse import urlparse
     c,a,t=site
     created=c.post('/api/v1/admin/invites',json={'label':'丙'}).json()
-    path=urlparse(created['subscription_url']).path
-    assert c.get(path).status_code==200 and 'BEGIN:VCALENDAR' in c.get(path).text
-    login_as(c,created['token'])
+    relogin(c,created['token'])
+    path=urlparse(c.get('/api/v1/status').json()['subscription_url']).path
+    assert path.startswith('/c/') and c.get(path).status_code==200 and 'BEGIN:VCALENDAR' in c.get(path).text
     saved=c.cookies.get('session')
     assert saved
     login_as(c,t['admin'])

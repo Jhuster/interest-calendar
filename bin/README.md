@@ -32,7 +32,7 @@
 BASE_URL=http://192.168.1.20:8787 ./bin/start-background.sh
 ```
 
-如果本机没有可探测到的局域网地址，才会回退到 `127.0.0.1`，此时只能本机访问。这两条脚本始终不传应用的 `--dev`。`--dev` 只用于开发：它要求配置里的 `BASE_URL` 是回环地址，但进程仍听 `0.0.0.0`，并不是只绑 `127.0.0.1`。订阅地址在设置页，形如 `http://<局域网IP>:8787/c/<token>/calendar.ics`。`/calendar.ics` 没有内容。份数和公网边界见 `docs/存储与部署规格.md`。
+如果本机没有可探测到的局域网地址，才会回退到 `127.0.0.1`，此时只能本机访问。这两条脚本始终不传应用的 `--dev`。`--dev` 只用于开发：它要求配置里的 `BASE_URL` 是回环地址，但进程仍听 `0.0.0.0`，并不是只绑 `127.0.0.1`。公开订阅地址在日程页和「订阅」页，形如 `http://<局域网IP>:8787/public/calendar.ics`，无需登录。`/calendar.ics` 没有内容。受邀用户的地址在其登录后的「订阅」页。份数和公网边界见 `docs/存储与部署规格.md`。
 
 初始化需要网络和 curl 或 wget，使用 uv 官方安装源：https://docs.astral.sh/uv/getting-started/installation/ 。脚本可重复运行，项目依赖位于 `src/.venv/`，不会重置数据库。
 
@@ -56,7 +56,7 @@ CALENDAR_KEY=/etc/interest-calendar/privkey.pem \
 - 监听仍是程序默认的 `0.0.0.0`。端口来自 `BASE_URL`，缺省 8787。脚本不另外绑定网卡，也不传 `--dev`。
 - `BASE_URL` 必须是公网 HTTPS 源。未提供 `CALENDAR_CERT`/`CALENDAR_KEY` 时，由反向代理终止 TLS，再转到本机上的该端口。
 - 云防火墙或安全组才是公网大门。不要把 8787 以 HTTP 对 `0.0.0.0/0` 开放。
-- 登录后的设置页给出订阅地址，形如 `https://calendar.example.com/c/<token>/calendar.ics`。不是 `/calendar.ics`。
+- 公开订阅地址在日程页和「订阅」页，形如 `https://calendar.example.com/public/calendar.ics`。不是 `/calendar.ics`。受邀用户的 `/c/<token>/calendar.ics` 只在该用户登录后的「订阅」页。
 - 应用进程本身仍接受 HTTP 启动，以便本机局域网用法不变。拒绝非 https 的是这条 ECS 脚本，不是程序。细节见 `docs/存储与部署规格.md`。
 
 ## 停止
@@ -99,7 +99,7 @@ uv run --directory ../src python -m app restore --data-dir ../bin/data --backup 
 ./bin/build-docker/build-image.sh
 ```
 
-容器入口不探测地址，也不传 `--dev`。未设置 `BASE_URL` 时入口使用 `http://127.0.0.1:8787`，只能当占位；实际运行必须自己设置 `BASE_URL`。进程在容器内仍听应用默认的 `0.0.0.0`，端口取自 `BASE_URL`，缺省 8787。`--log-opt` 把容器标准输出限制为 1 MiB × 7 份，镜像本身不声明这个上限。管理令牌在数据卷的 `credentials.json`（或首次的 `first-run-credentials.txt`）中，不写入容器标准输出。订阅地址在登录后的设置页，形如 `<BASE_URL>/c/<token>/calendar.ics`，不是 `/calendar.ics`。
+容器入口不探测地址，也不传 `--dev`。未设置 `BASE_URL` 时入口使用 `http://127.0.0.1:8787`，只能当占位；实际运行必须自己设置 `BASE_URL`。进程在容器内仍听应用默认的 `0.0.0.0`，端口取自 `BASE_URL`，缺省 8787。`--log-opt` 把容器标准输出限制为 1 MiB × 7 份，镜像本身不声明这个上限。管理令牌在数据卷的 `credentials.json`（或首次的 `first-run-credentials.txt`）中，不写入容器标准输出。公开订阅地址形如 `<BASE_URL>/public/calendar.ics`，在日程页和「订阅」页，不是 `/calendar.ics`。受邀用户的地址仍是 `<BASE_URL>/c/<token>/calendar.ics`，只在该用户登录后的「订阅」页。
 
 可信局域网可以把端口发到宿主机，地址用局域网 HTTP：
 

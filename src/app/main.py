@@ -25,13 +25,14 @@ def _same(left, right):
     return hmac.compare_digest(left, right)
 
 def calendar_feed(path):
+    if path=='/public/calendar.ics': return True
     parts=path.split('/')
     return len(parts)==4 and parts[0]=='' and parts[1]=='c' and bool(parts[2]) and parts[3]=='calendar.ics'
 
 def anonymous_ok(path, method):
     if path in ('/login','/health') or calendar_feed(path) or path.startswith('/static/'): return True
     if path=='/api/v1/session' and method=='POST': return True
-    if method in ('GET','HEAD') and path in ('/','/api/v1/events','/api/v1/interests','/api/v1/status'): return True
+    if method in ('GET','HEAD') and path in ('/','/subscribe','/api/v1/events','/api/v1/interests','/api/v1/status'): return True
     if method in ('GET','HEAD') and path.startswith('/api/v1/events/'): return True
     return False
 
@@ -108,6 +109,8 @@ def create_app(config=None):
             if session: request.state.role=session['kind'];request.state.session=session
             authorization=request.headers.get('authorization','')
             if authorization.startswith('Bearer ') and hmac.compare_digest(token_hash(authorization[7:]),credentials['agent']) and (not session or session['kind']!='invitee'): request.state.role='agent'
+            if request.url.path=='/settings': raise Problem('NOT_FOUND','页面不存在',404)
+            if request.url.path in ('/admin','/model') and request.state.role!='admin': raise Problem('FORBIDDEN','没有权限查看此页面',403)
             if not public and not request.state.role:
                 if not request.url.path.startswith('/api/'):
                     redirected=RedirectResponse('/login',303)
@@ -169,6 +172,9 @@ def create_app(config=None):
     def subscription_for(account):
         if account['kind']=='public': return config.subscription_url()
         return config.subscription_url_for(account['calendar_token'])
+    def account_id_for(request, db):
+        if request.state.role=='invitee': return request.state.session['account_id']
+        return db.execute("SELECT id FROM accounts WHERE kind='public'").fetchone()[0]
     @app.post('/api/v1/session')
     async def login(request:Request):
         rate(('login',request.client.host),5); b=await body(request)
@@ -206,14 +212,11 @@ def create_app(config=None):
         with app.state.store.tx() as db: result=context(db)
         result.update(schema_url=config.base_url+'/api/v1/agent/schema/1.0',upload_url=config.base_url+'/api/v1/batches')
         return answer(request,result)
-    def viewed_account(request, db):
-        if request.state.role in ('admin','invitee'): return request.state.session['account_id']
-        return db.execute("SELECT id FROM accounts WHERE kind='public'").fetchone()[0]
     @app.get('/api/v1/interests')
     def interests(request:Request):
         if request.state.role=='agent': raise Problem('FORBIDDEN','此操作需要登录',403)
         with app.state.store.tx() as db:
-            aid=viewed_account(request, db)
+            aid=account_id_for(request, db)
             s=settings(db, aid)
             items=[without_account(r) for r in db.execute('SELECT * FROM interests WHERE account_id=? AND deleted_at IS NULL ORDER BY created_at,id',(aid,))]
             events=[exposed(r) for r in db.execute('SELECT * FROM events WHERE account_id=?',(aid,))]
@@ -229,7 +232,7 @@ def create_app(config=None):
         session=signed_in(request);b=await body(request);keyword=b.get('keyword');conditions=b.get('conditions','')
         if not isinstance(keyword,str) or not keyword.strip() or len(keyword)>200 or not isinstance(conditions,str) or len(conditions)>2000: raise Problem('SCHEMA_INVALID','关键词必填且不超过200字，补充条件不超过2000字')
         with app.state.store.tx(True) as db:
-            aid=session['account_id'];precondition(db,b,aid);i=uid()
+            aid=account_id_for(request, db);precondition(db,b,aid);i=uid()
             try: db.execute('INSERT INTO interests VALUES(?,?,?,?,?,NULL,?)',(i,keyword.strip(),conditions.strip(),canonical([norm(keyword),norm(conditions)]),stamp(),aid))
             except sqlite3.IntegrityError: raise Problem('INTEREST_EXISTS','这个兴趣及条件已经添加',409)
             db.execute('UPDATE settings SET config_version=config_version+1 WHERE account_id=?',(aid,))
@@ -237,7 +240,7 @@ def create_app(config=None):
     @app.delete('/api/v1/interests/{interest_id}')
     async def remove_interest(interest_id:str,request:Request):
         session=signed_in(request);b=await body(request)
-        with app.state.store.tx(True) as db: delete_interest(db,interest_id,b,session['account_id'])
+        with app.state.store.tx(True) as db: delete_interest(db,interest_id,b,account_id_for(request, db))
         return answer(request,{'ok':True})
     @app.post('/api/v1/admin/reset')
     async def reset_admin(request:Request):
@@ -245,7 +248,7 @@ def create_app(config=None):
         if b.get('confirmation') != 'RESET':
             raise Problem('CONFIRMATION_REQUIRED','请输入 RESET 确认此操作',400)
         with app.state.store.tx(True) as db:
-            aid=request.state.session['account_id'];precondition(db,b,aid)
+            aid=account_id_for(request, db);precondition(db,b,aid)
             reset_data(db, b.get('scope'), aid)
             db.execute('INSERT INTO audit_log(operation,created_at,result,request_id) VALUES(?,?,?,?)',('reset',stamp(),b['scope'],request.state.request_id))
         try: app.state.store.vacuum()
@@ -256,14 +259,14 @@ def create_app(config=None):
         if not 1<=limit<=200 or offset<0: raise Problem('SCHEMA_INVALID','分页范围错误')
         try: start=date.fromisoformat(start_date) if start_date else None;end=date.fromisoformat(end_date) if end_date else None
         except ValueError: raise Problem('TIME_INVALID','日期格式应为 YYYY-MM-DD')
-        with app.state.store.tx() as db: rows=[exposed(r) for r in db.execute('SELECT * FROM events WHERE account_id=?',(viewed_account(request,db),))]
+        with app.state.store.tx() as db: rows=[exposed(r) for r in db.execute('SELECT * FROM events WHERE account_id=?',(account_id_for(request,db),))]
         rows=[e for e in rows if (request.state.role=='agent' or e['calendar_visible']) and (not interest_id or interest_id in e['interest_ids']) and (not start or days(e['timing'])[1]>start) and (not end or days(e['timing'])[0]<end)]
         rows.sort(key=lambda e:(e['start_date'],e['id']))
         return answer(request,{'items':rows[offset:offset+limit],'total':len(rows)})
     @app.get('/api/v1/events/{eid}')
     def get_event(eid:str,request:Request):
         with app.state.store.tx() as db:
-            result=exposed(event(db,eid,viewed_account(request,db)))
+            result=exposed(event(db,eid,account_id_for(request,db)))
         if request.state.role not in ('admin','invitee','agent') and not result['calendar_visible']: raise Problem('NOT_FOUND','事件不存在',404)
         return answer(request,result)
     @app.post('/api/v1/batches')
@@ -271,15 +274,15 @@ def create_app(config=None):
         agent(request);rate(('upload','agent'),10);result,status=import_batch(app.state.store,await body(request));return answer(request,result,status)
     @app.get('/api/v1/batches')
     def batches(request:Request):
-        session=signed_in(request)
-        with app.state.store.tx() as db: rows=[without_account(r)|{'receipt':receipt(db,r)} for r in db.execute('SELECT * FROM batches WHERE account_id=? ORDER BY received_at DESC,batch_id LIMIT 200',(session['account_id'],))]
+        signed_in(request)
+        with app.state.store.tx() as db: rows=[without_account(r)|{'receipt':receipt(db,r)} for r in db.execute('SELECT * FROM batches WHERE account_id=? ORDER BY received_at DESC,batch_id LIMIT 200',(account_id_for(request,db),))]
         return answer(request,{'items':rows})
     @app.get('/api/v1/batches/{bid}')
     def get_batch(bid:str,request:Request,state_epoch:str|None=None):
         with app.state.store.tx() as db:
             if request.state.role=='agent':
                 epoch(db,state_epoch); aid=account_of(db)
-            elif request.state.role in ('admin','invitee'): aid=request.state.session['account_id']
+            elif request.state.role in ('admin','invitee'): aid=account_id_for(request, db)
             else: raise Problem('AUTH_REQUIRED','请先登录',401)
             row=db.execute('SELECT * FROM batches WHERE batch_id=? AND account_id=?',(bid,aid)).fetchone()
             if not row: raise Problem('NOT_FOUND','未找到该批次',404)
@@ -288,49 +291,38 @@ def create_app(config=None):
     def candidates(request:Request):
         with app.state.store.tx() as db:
             if request.state.role=='agent': aid=account_of(db)
-            elif request.state.role in ('admin','invitee'): aid=request.state.session['account_id']
+            elif request.state.role in ('admin','invitee'): aid=account_id_for(request, db)
             else: raise Problem('AUTH_REQUIRED','请先登录',401)
             rows=[without_account(r)|{'payload':json.loads(r['payload_json'])} for r in db.execute('SELECT * FROM candidates WHERE account_id=? ORDER BY state,id',(aid,))]
         return answer(request,{'items':rows})
     @app.post('/api/v1/candidates/{cid}/resolve')
     async def candidate_resolve(cid:str,request:Request):
         admin(request);b=await body(request)
-        with app.state.store.tx(True) as db: resolve(db,cid,b,request.state.session['account_id'])
+        with app.state.store.tx(True) as db: resolve(db,cid,b,account_id_for(request, db))
         return answer(request,{'ok':True})
     @app.get('/api/v1/status')
     def status(request:Request):
         if request.state.role=='agent': raise Problem('FORBIDDEN','此操作需要登录',403)
         with app.state.store.tx() as db:
-            if request.state.role in ('admin','invitee'):
-                aid=request.state.session['account_id']; role=request.state.role
-            else:
-                aid=account_of(db); role=None
+            aid=account_id_for(request, db)
+            role=request.state.role if request.state.role in ('admin','invitee') else None
             account=dict(db.execute('SELECT * FROM accounts WHERE id=?',(aid,)).fetchone())
             s=settings(db,aid);pub=db.execute('SELECT data_revision,created_at FROM publications WHERE id=?',(s['active_publication_id'],)).fetchone()
-            s.update(published_revision=pub['data_revision'] if pub else -1,published_at=pub['created_at'] if pub else None,candidate_count=db.execute("SELECT count(*) FROM candidates WHERE account_id=? AND state='pending'",(aid,)).fetchone()[0],last_received=db.execute('SELECT max(received_at) FROM batches WHERE account_id=?',(aid,)).fetchone()[0],last_imported=db.execute('SELECT max(received_at) FROM batches WHERE account_id=? AND status<400',(aid,)).fetchone()[0],base_url=config.base_url,subscription_url=None if role is None else subscription_for(account),development=config.development,backup_error=app.state.backup_error,role=role,account_kind=account['kind'],account_label=account['label'])
+            s.update(published_revision=pub['data_revision'] if pub else -1,published_at=pub['created_at'] if pub else None,candidate_count=db.execute("SELECT count(*) FROM candidates WHERE account_id=? AND state='pending'",(aid,)).fetchone()[0],last_received=db.execute('SELECT max(received_at) FROM batches WHERE account_id=?',(aid,)).fetchone()[0],last_imported=db.execute('SELECT max(received_at) FROM batches WHERE account_id=? AND status<400',(aid,)).fetchone()[0],base_url=config.base_url,subscription_url=subscription_for(account),development=config.development,backup_error=app.state.backup_error,role=role,account_kind=account['kind'],account_label=account['label'])
         return answer(request,s)
     @app.get('/api/v1/admin/accounts')
     def account_list(request:Request):
         admin(request)
         with app.state.store.tx() as db:
             items=[]
-            for row in db.execute('SELECT * FROM accounts ORDER BY kind DESC,created_at,id'):
-                items.append(dict(id=row['id'],kind=row['kind'],label=row['label'],revoked_at=row['revoked_at'],created_at=row['created_at'],subscription_url=subscription_for(row)))
-        return answer(request,{'items':items,'current':request.state.session['account_id']})
-    @app.post('/api/v1/admin/session/account')
-    async def switch_account(request:Request):
-        admin(request);b=await body(request);aid=b.get('account_id')
-        if not isinstance(aid,str): raise Problem('SCHEMA_INVALID','需要账户 id')
-        with app.state.store.tx() as db:
-            row=db.execute('SELECT id,kind FROM accounts WHERE id=?',(aid,)).fetchone()
-            if not row: raise Problem('NOT_FOUND','账户不存在',404)
-        request.state.session['account_id']=row['id']
-        return answer(request,{'ok':True,'account_id':row['id'],'account_kind':row['kind']})
+            for row in db.execute("SELECT id,label,revoked_at,created_at FROM accounts WHERE kind='invite' ORDER BY created_at,id"):
+                items.append(dict(id=row['id'],label=row['label'],revoked_at=row['revoked_at'],created_at=row['created_at']))
+        return answer(request,{'items':items})
     @app.post('/api/v1/admin/invites')
     async def add_invite(request:Request):
         admin(request);b=await body(request)
         with app.state.store.tx(True) as db: created=create_invite(db,b.get('label'))
-        return answer(request,{'id':created['id'],'label':created['label'],'token':created['token'],'subscription_url':config.subscription_url_for(created['calendar_token'])},201)
+        return answer(request,{'id':created['id'],'label':created['label'],'token':created['token']},201)
     @app.post('/api/v1/admin/invites/{aid}/revoke')
     def revoke(aid:str,request:Request):
         admin(request)
@@ -340,36 +332,54 @@ def create_app(config=None):
     def reissue(aid:str,request:Request):
         admin(request)
         with app.state.store.tx(True) as db: created=reissue_invite(db,aid)
-        return answer(request,{'id':created['id'],'token':created['token'],'subscription_url':config.subscription_url_for(created['calendar_token'])})
+        return answer(request,{'id':created['id'],'token':created['token']})
     @app.post('/api/v1/publications/retry')
     async def retry(request:Request):
         admin(request);b=await body(request)
-        with app.state.store.tx() as db: epoch(db,b.get('state_epoch'),request.state.session['account_id'])
+        with app.state.store.tx() as db: epoch(db,b.get('state_epoch'),account_id_for(request, db))
         attempt_publish();return answer(request,{'ok':True})
-    @app.api_route('/c/{token}/calendar.ics',methods=['GET','HEAD'])
-    def calendar(token:str,request:Request):
-        digest=token_hash(token)
-        with app.state.store.tx() as db:
-            account=db.execute('SELECT id,calendar_hash,revoked_at FROM accounts WHERE calendar_hash=?',(digest,)).fetchone()
-            if not account or account['revoked_at'] or not _same(digest, account['calendar_hash']): raise Problem('NOT_FOUND','未找到日历',404)
-            row=db.execute('SELECT p.* FROM publications p JOIN settings s ON s.account_id=? AND s.active_publication_id=p.id',(account['id'],)).fetchone()
+    def calendar_body(request, row):
         if not row: raise Problem('TEMPORARILY_UNAVAILABLE','日历尚未初始化',503)
         tag='"'+row['sha256']+'"';headers={'ETag':tag,'Cache-Control':'no-cache'}
         tags=[x.strip().removeprefix('W/') for x in request.headers.get('if-none-match','').split(',')]
         if tag in tags or '*' in tags: return Response(status_code=304,headers=headers)
         return Response(b'' if request.method=='HEAD' else row['ics_blob'],media_type='text/calendar; charset=utf-8',headers=headers)
+    def publication_for(db, account_id):
+        return db.execute('SELECT p.* FROM publications p JOIN settings s ON s.account_id=? AND s.active_publication_id=p.id',(account_id,)).fetchone()
+    @app.api_route('/public/calendar.ics',methods=['GET','HEAD'])
+    def public_calendar(request:Request):
+        with app.state.store.tx() as db:
+            account_id=db.execute("SELECT id FROM accounts WHERE kind='public'").fetchone()[0]
+            row=publication_for(db, account_id)
+        return calendar_body(request, row)
+    @app.api_route('/c/{token}/calendar.ics',methods=['GET','HEAD'])
+    def calendar(token:str,request:Request):
+        digest=token_hash(token)
+        with app.state.store.tx() as db:
+            account=db.execute("SELECT id,calendar_hash FROM accounts WHERE kind='invite' AND revoked_at IS NULL AND calendar_hash=?",(digest,)).fetchone()
+            if not account or not _same(digest, account['calendar_hash']): raise Problem('NOT_FOUND','未找到日历',404)
+            row=publication_for(db, account['id'])
+        return calendar_body(request, row)
     @app.get('/login',response_class=HTMLResponse)
     @app.get('/',response_class=HTMLResponse)
     @app.get('/interests',response_class=HTMLResponse)
-    @app.get('/settings',response_class=HTMLResponse)
+    @app.get('/subscribe',response_class=HTMLResponse)
+    @app.get('/model',response_class=HTMLResponse)
+    @app.get('/admin',response_class=HTMLResponse)
     @app.get('/candidates',response_class=HTMLResponse)
     @app.get('/runs',response_class=HTMLResponse)
     def page(request:Request):
-        if request.url.path not in ('/','/login') and request.state.role not in ('admin','invitee'):
+        if request.url.path in ('/admin','/model') and request.state.role!='admin':
+            raise Problem('FORBIDDEN','没有权限查看此页面',403)
+        if request.url.path not in ('/','/login','/subscribe') and request.state.role not in ('admin','invitee'):
             raise Problem('FORBIDDEN','此操作需要登录',403)
         role=request.state.role if request.state.role in ('admin','invitee') else ''
         label='';kind=''
-        if role:
+        if role=='admin':
+            with app.state.store.tx() as db:
+                row=db.execute("SELECT label,kind FROM accounts WHERE kind='public'").fetchone()
+                label=row['label'];kind=row['kind']
+        elif role=='invitee':
             with app.state.store.tx() as db:
                 row=db.execute('SELECT label,kind FROM accounts WHERE id=?',(request.state.session['account_id'],)).fetchone()
                 label=row['label'];kind=row['kind']

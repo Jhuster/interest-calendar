@@ -55,7 +55,7 @@ unset VIRTUAL_ENV
 cd "$PROJECT_DIR/src"
 
 printf '%s\n' '监听仍是程序默认的 0.0.0.0，端口取自 BASE_URL，未写端口时为 8787。本脚本不改绑定，也不传 --dev。' >&2
-printf '%s\n' '云防火墙或安全组才是公网大门。订阅地址在设置页，形如 '"${BASE_URL%/}"'/c/<token>/calendar.ics，不是 /calendar.ics。' >&2
+printf '%s\n' '云防火墙或安全组才是公网大门。公开订阅地址在日程页和「订阅」页，形如 '"${BASE_URL%/}"'/public/calendar.ics，不是 /calendar.ics。' >&2
 if [ -n "${CALENDAR_CERT:-}" ]; then
   printf '%s\n' '将使用 --cert/--key 在进程上终止 TLS。未写端口时手机应访问 8787 上的 HTTPS，或把 BASE_URL 写成带端口的源。' >&2
 else
