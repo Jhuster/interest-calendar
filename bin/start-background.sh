@@ -1,6 +1,6 @@
 #!/bin/sh
 # 本机与可信局域网的后台启动。调用 start.sh，因此同样不传应用的 --dev。
-# 公网 ECS 使用 start-ecs.sh，不要用本脚本。
+# 公网云虚拟机使用 start-ecs.sh，不要用本脚本。
 set -eu
 BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$BIN_DIR/.." && pwd)
