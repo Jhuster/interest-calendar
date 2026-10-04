@@ -9,16 +9,16 @@
 - `runtime/`：本机下载的工具、Python 和缓存，不进入 Git；换机器后重新运行初始化。
 - `start.sh`：本机与可信局域网的前台启动。不传应用的 `--dev`。
 - `start-background.sh`：本机与可信局域网的后台启动，内部调用 `start.sh`。日志写入 `bin/data/server.log`。启动前和运行中若超过 1 MiB 会轮转，只保留最近 7 份，权限为仅当前用户可读。运行中是复制后截断，避免已经打开的日志继续写进旧文件。
-- `start-ecs.sh`：公网 ECS 的前台启动。要求 `BASE_URL` 为 https 源，不探测局域网地址，不传 `--dev`，不改监听。
+- `start-ecs.sh`：公网云虚拟机的前台启动。要求 `BASE_URL` 为 https 源，不探测局域网地址，不传 `--dev`，不改监听。
 - `build-docker/`：容器构建子目录，包含 `build-image.sh`、`Dockerfile` 和容器启动入口。
 - `demo.py`：按需生成隔离的虚构演示数据，不是正式数据采集程序。
 - `data/`：正式数据库、备份、凭据和运行日志。该目录不会提交 Git。
 
 ## 本机启动
 
-网页管理需要管理员令牌。前台启动且终端可交互时，控制台显示访问地址和当前管理令牌。后台启动只在当前终端显示一次令牌，不把令牌写入 `server.log`。令牌原文保存在权限为仅当前用户可读的 `bin/data/credentials.json`（字段 `admin_token`）。首次启动还会写入 `bin/data/first-run-credentials.txt`，请保存后删除该文件。旧安装若只保留了哈希且已删除首次凭据文件，需要按下方命令轮换一次。
+网页管理需要登录令牌。页头右上角的「登录」在当前页弹出小窗。前台启动且终端可交互时，控制台显示访问地址和当前管理令牌。其他账户使用创建或重新签发时显示一次的 16 位登录令牌，不使用这份管理员令牌。新的管理令牌也是 16 位；已经写在文件里的旧值，重启不更换。后台启动只在当前终端显示一次令牌，不把令牌写入 `server.log`。令牌原文保存在权限为仅当前用户可读的 `bin/data/credentials.json`（字段 `admin_token`）。首次启动还会写入 `bin/data/first-run-credentials.txt`，请保存后删除该文件。旧安装若只保留了哈希且已删除首次凭据文件，需要按下方命令轮换一次。
 
-如果已经运行过，在 `bin` 目录执行 `cat data/credentials.json`，使用其中的 `admin_token`。`agent_token` 用于程序上传，不用于网页登录。该原文若已不存在，使用 `uv run --directory ../src python -m app rotate --data-dir ../bin/data --role admin` 生成并打印新管理令牌，旧令牌立即失效。
+如果已经运行过，在 `bin` 目录执行 `cat data/credentials.json`，使用其中的 `admin_token`。`agent_token` 是管理员这一份的上传凭据，不用于网页登录。其他账户的 Agent 令牌只在各自的「大模型」页。该原文若已不存在，使用 `uv run --directory ../src python -m app rotate --data-dir ../bin/data --role admin` 生成并打印新管理令牌，旧令牌立即失效。
 
 首次使用先在项目根目录执行 `./bin/init.sh`，然后启动：
 
@@ -32,13 +32,13 @@
 BASE_URL=http://192.168.1.20:8787 ./bin/start-background.sh
 ```
 
-如果本机没有可探测到的局域网地址，才会回退到 `127.0.0.1`，此时只能本机访问。这两条脚本始终不传应用的 `--dev`。`--dev` 只用于开发：它要求配置里的 `BASE_URL` 是回环地址，但进程仍听 `0.0.0.0`，并不是只绑 `127.0.0.1`。订阅地址在设置页，形如 `http://<局域网IP>:8787/c/<token>/calendar.ics`。`/calendar.ics` 没有内容。份数和公网边界见 `docs/存储与部署规格.md`。
+如果本机没有可探测到的局域网地址，才会回退到 `127.0.0.1`，此时只能本机访问。这两条脚本始终不传应用的 `--dev`。`--dev` 只用于开发：它要求配置里的 `BASE_URL` 是回环地址，但进程仍听 `0.0.0.0`，并不是只绑 `127.0.0.1`。订阅地址只在「订阅」页。未登录和管理员登录看到的形如 `http://<局域网IP>:8787/public/calendar.ics`。`/calendar.ics` 没有内容。其他账户登录后，同一页是自己的 `/c/<16位订阅密钥>/calendar.ics`。份数和公网边界见 `docs/存储与部署规格.md`。
 
 初始化需要网络和 curl 或 wget，使用 uv 官方安装源：https://docs.astral.sh/uv/getting-started/installation/ 。脚本可重复运行，项目依赖位于 `src/.venv/`，不会重置数据库。
 
 ## 云主机
 
-不要在公网机器（ECS 或其它云虚拟机）上使用 `start.sh` 或 `start-background.sh`。它们会在缺少 `BASE_URL` 时写成局域网 HTTP 地址。
+不要在公网云虚拟机上使用 `start.sh` 或 `start-background.sh`。它们会在缺少 `BASE_URL` 时写成局域网 HTTP 地址。
 
 ```sh
 BASE_URL=https://calendar.example.com ./bin/start-ecs.sh
@@ -56,8 +56,8 @@ CALENDAR_KEY=/etc/interest-calendar/privkey.pem \
 - 监听仍是程序默认的 `0.0.0.0`。端口来自 `BASE_URL`，缺省 8787。脚本不另外绑定网卡，也不传 `--dev`。
 - `BASE_URL` 必须是公网 HTTPS 源。未提供 `CALENDAR_CERT`/`CALENDAR_KEY` 时，由反向代理终止 TLS，再转到本机上的该端口。
 - 云防火墙或安全组才是公网大门。不要把 8787 以 HTTP 对 `0.0.0.0/0` 开放。
-- 登录后的设置页给出订阅地址，形如 `https://calendar.example.com/c/<token>/calendar.ics`。不是 `/calendar.ics`。
-- 应用进程本身仍接受 HTTP 启动，以便本机局域网用法不变。拒绝非 https 的是这条 ECS 脚本，不是程序。细节见 `docs/存储与部署规格.md`。
+- 订阅地址只在「订阅」页。未登录和管理员看到的形如 `https://calendar.example.com/public/calendar.ics`，不是 `/calendar.ics`。其他账户登录后是自己的 `/c/<16位订阅密钥>/calendar.ics`。
+- 应用进程本身仍接受 HTTP 启动，以便本机局域网用法不变。拒绝非 https 的是 `start-ecs.sh`，不是程序。细节见 `docs/存储与部署规格.md`。
 
 ## 停止
 
@@ -99,7 +99,7 @@ uv run --directory ../src python -m app restore --data-dir ../bin/data --backup 
 ./bin/build-docker/build-image.sh
 ```
 
-容器入口不探测地址，也不传 `--dev`。未设置 `BASE_URL` 时入口使用 `http://127.0.0.1:8787`，只能当占位；实际运行必须自己设置 `BASE_URL`。进程在容器内仍听应用默认的 `0.0.0.0`，端口取自 `BASE_URL`，缺省 8787。`--log-opt` 把容器标准输出限制为 1 MiB × 7 份，镜像本身不声明这个上限。管理令牌在数据卷的 `credentials.json`（或首次的 `first-run-credentials.txt`）中，不写入容器标准输出。订阅地址在登录后的设置页，形如 `<BASE_URL>/c/<token>/calendar.ics`，不是 `/calendar.ics`。
+容器入口不探测地址，也不传 `--dev`。未设置 `BASE_URL` 时入口使用 `http://127.0.0.1:8787`，只能当占位；实际运行必须自己设置 `BASE_URL`。进程在容器内仍听应用默认的 `0.0.0.0`，端口取自 `BASE_URL`，缺省 8787。`--log-opt` 把容器标准输出限制为 1 MiB × 7 份，镜像本身不声明这个上限。管理令牌在数据卷的 `credentials.json`（或首次的 `first-run-credentials.txt`）中，不写入容器标准输出。订阅地址只在「订阅」页。未登录和管理员看到的是 `<BASE_URL>/public/calendar.ics`，不是 `/calendar.ics`。其他账户登录后是自己的 `<BASE_URL>/c/<16位订阅密钥>/calendar.ics`。
 
 可信局域网可以把端口发到宿主机，地址用局域网 HTTP：
 

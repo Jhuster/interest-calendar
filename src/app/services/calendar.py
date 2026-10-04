@@ -36,25 +36,41 @@ def render(rows):
     Calendar.from_ical(blob)
     return blob
 
+def _publish_account(store, account_id):
+    try:
+        with store.tx() as db:
+            s=db.execute('SELECT * FROM settings WHERE account_id=?',(account_id,)).fetchone()
+            old=db.execute('SELECT * FROM publications WHERE id=?',(s['active_publication_id'],)).fetchone() if s['active_publication_id'] else None
+            if old and old['data_revision']==s['data_revision'] and b'X-INTEREST-DISPLAY-VERSION:3' in old['ics_blob']: return False
+            revision=s['data_revision']
+            rows=[dict(r) for r in db.execute('SELECT * FROM events WHERE account_id=?',(account_id,))]
+        blob=render(rows)
+        with store.tx(True) as db:
+            if db.execute('SELECT data_revision FROM settings WHERE account_id=?',(account_id,)).fetchone()[0]!=revision: return None
+            previous=db.execute('SELECT active_publication_id FROM settings WHERE account_id=?',(account_id,)).fetchone()[0]
+            pid=str(uuid.uuid4())
+            db.execute('INSERT INTO publications VALUES(?,?,?,?,?,?)',(pid,revision,blob,hashlib.sha256(blob).hexdigest(),stamp(),account_id))
+            db.execute('UPDATE settings SET active_publication_id=?,publish_error=NULL WHERE account_id=?',(pid,account_id))
+            keep=[pid]
+            if previous: keep.append(previous)
+            deleted=db.execute('DELETE FROM publications WHERE account_id=? AND id NOT IN ('+','.join('?'*len(keep))+')',[account_id,*keep]).rowcount
+            return deleted>0
+    except Exception:
+        try:
+            with store.tx(True) as db:
+                db.execute("UPDATE settings SET publish_error='发布失败，保留最后成功日历；稍后自动重试' WHERE account_id=?",(account_id,))
+        except Exception:
+            logging.getLogger('uvicorn.error').exception('记录发布失败状态失败')
+        raise
+
 def publish(store):
     with store.tx() as db:
-        s=db.execute('SELECT * FROM settings').fetchone()
-        old=db.execute('SELECT * FROM publications WHERE id=?',(s['active_publication_id'],)).fetchone()
-        if old and old['data_revision']==s['data_revision'] and b'X-INTEREST-DISPLAY-VERSION:3' in old['ics_blob']: return True
-        revision=s['data_revision']
-        rows=[dict(r) for r in db.execute('SELECT * FROM events')]
-    blob=render(rows)
+        accounts=[row[0] for row in db.execute('SELECT account_id FROM settings ORDER BY account_id')]
     pruned=False
-    with store.tx(True) as db:
-        if db.execute('SELECT data_revision FROM settings').fetchone()[0]!=revision: return False
-        previous=db.execute('SELECT active_publication_id FROM settings').fetchone()[0]
-        pid=str(uuid.uuid4())
-        db.execute('INSERT INTO publications VALUES(?,?,?,?,?)',(pid,revision,blob,hashlib.sha256(blob).hexdigest(),stamp()))
-        db.execute('UPDATE settings SET active_publication_id=?,publish_error=NULL',(pid,))
-        keep=[pid]
-        if previous: keep.append(previous)
-        deleted=db.execute('DELETE FROM publications WHERE id NOT IN ('+','.join('?'*len(keep))+')',keep).rowcount
-        pruned=deleted>0
+    for account_id in accounts:
+        result=_publish_account(store, account_id)
+        if result is None: return False
+        pruned=pruned or result
     if pruned:
         try: store.vacuum()
         except Exception:
