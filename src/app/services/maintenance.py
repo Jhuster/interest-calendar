@@ -255,7 +255,9 @@ def _render(report):
         lines.append('SEQUENCE：')
         lines.append('- 缺少版本基线，不调整 SEQUENCE，也不能仅靠把已有事件 SEQUENCE 加一来保证手机状态。')
     else: lines.extend(_diff_lines(report))
-    lines.append('数据库备份不恢复凭据，旧令牌不会复活。')
+    lines.append('管理员和公开 Agent 凭据仍使用当前 credentials.json；邀请账户沿用当前令牌和撤销状态，旧令牌不会复活。')
+    lines.append(f"保留当前邀请账户访问状态：{report['account_access_preserved']} 个；禁用缺少当前访问记录的备份账户：{report['backup_accounts_disabled']} 个。")
+    lines.append('备份之后新增的邀请账户保留访问状态，日历和兴趣恢复为空；当前库缺失时，备份中的邀请账户全部禁用，需重新邀请。')
     lines.append('会话只保存在进程内存中；恢复前须停止服务，停止后会话即清空。')
     lines.append('每次恢复生成新的 state_epoch，并增加一次 data_revision 以触发新快照。')
     lines.append('旧 state_epoch 的批次只作为恢复前记录显示，不能与新的发布进度比较；未完成的旧批次需要重新采集核验。')
@@ -266,12 +268,45 @@ def _render(report):
     else: lines.append('尚未修改当前数据库。核对后使用 --apply 执行恢复。')
     return '\n'.join(lines)+'\n'
 
+def _preserve_account_access(path, live, baseline):
+    """Restore content while keeping the current invitation access decisions."""
+    from app.services.domain import seed_publication
+    current={}
+    if baseline:
+        db=_connect(live,readonly=True)
+        try:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='accounts'").fetchone():
+                current={r['id']:dict(r) for r in db.execute("SELECT * FROM accounts WHERE kind='invite'")}
+        finally: db.close()
+    db=_connect(path)
+    try:
+        restored={r['id']:dict(r) for r in db.execute("SELECT * FROM accounts WHERE kind='invite'")}
+        fields=('login_hash','calendar_hash','calendar_token','agent_hash','agent_token','revoked_at')
+        for aid,row in restored.items():
+            if aid in current:
+                values=[current[aid].get(field) for field in fields]
+                db.execute('UPDATE accounts SET '+','.join(field+'=?' for field in fields)+' WHERE id=?',[*values,aid])
+            else:
+                # Without a current access record, backup credentials must not grant access.
+                db.execute('UPDATE accounts SET revoked_at=?,login_hash=NULL,agent_hash=NULL,agent_token=NULL WHERE id=?',(row['revoked_at'] or stamp(),aid))
+        for aid,row in current.items():
+            if aid in restored: continue
+            columns=list(row)
+            db.execute('INSERT INTO accounts ('+','.join(columns)+') VALUES ('+','.join('?' for _ in columns)+')',[row[c] for c in columns])
+            db.execute('INSERT INTO settings(account_id,state_epoch) VALUES(?,?)',(aid,str(uuid.uuid4())))
+            seed_publication(db,aid)
+        db.commit()
+    finally: db.close()
+    return len(current),len(set(restored)-set(current))
+
 def _apply_adjustments(path, adjustments, epoch):
     db=_connect(path)
     try:
         for item in adjustments:
             db.execute('UPDATE events SET sequence=?,ics_modified_at=? WHERE uid=?',(item['to_sequence'],stamp(),item['uid']))
-        db.execute('UPDATE settings SET state_epoch=?,data_revision=data_revision+1',(epoch,))
+        for row in db.execute('SELECT s.account_id,a.kind FROM settings s JOIN accounts a ON a.id=s.account_id').fetchall():
+            value=epoch if row['kind']=='public' else str(uuid.uuid4())
+            db.execute('UPDATE settings SET state_epoch=?,data_revision=data_revision+1 WHERE account_id=?',(value,row['account_id']))
         db.commit()
     finally: db.close()
 
@@ -305,14 +340,19 @@ def restore_database(directory, backup, apply=False):
     live=directory/'calendar.sqlite3'
     with _held_lock(directory):
         with tempfile.TemporaryDirectory() as tmp:
-            checked=Path(tmp)/'backup.sqlite3'
+            checked=Path(tmp)/'calendar.sqlite3'
             try: copy_database(backup,checked)
             except sqlite3.Error as exc: raise RestoreError('备份无法读取，未修改当前数据库') from exc
             snapshots=_validate_backup(checked)
+            from app.storage.database import Store
+            Store(tmp)
             restored=_load(checked)
             if restored is None: raise RestoreError('备份完整性检查失败')
             baseline=_load(live)
             report=_build_report(baseline,restored,snapshots)
+            kept,disabled=_preserve_account_access(checked,live,baseline)
+            report['account_access_preserved']=kept
+            report['backup_accounts_disabled']=disabled
             if apply:
                 epoch=str(uuid.uuid4())
                 if live.exists(): report['preserved']=_preserve(directory,live)

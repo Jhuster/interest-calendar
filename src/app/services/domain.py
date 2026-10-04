@@ -60,7 +60,7 @@ def save_event(db,p,old=None,reason='batch',batch_id=None,force_visible=None,acc
     for i in p['interest_ids']:
         db.execute('INSERT INTO event_interests VALUES(?,?,?,NULL) ON CONFLICT(event_id,interest_id) DO UPDATE SET unlinked_at=NULL',(eid,i,ts))
     db.execute('INSERT INTO event_versions VALUES(?,?,?,?,?)',(eid,version,canonical({'event':p,'visible':visible,'sequence':seq}),reason,batch_id))
-    return event(db,eid),changed,True
+    return event(db,eid,aid),changed,True
 
 def validate_identity(db,p,account_id=None):
     aid=account_of(db,account_id)
