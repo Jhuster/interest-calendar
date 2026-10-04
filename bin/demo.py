@@ -2,11 +2,11 @@
 import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1] / 'src'))
-import json, uuid, os
+import json, os
 from datetime import timedelta
 from app.config import Config, initialize
 from app.storage.database import Store
-from app.services.domain import context, import_batch, canonical, uid, norm
+from app.services.domain import context, import_batch, canonical, uid, norm, create_invite
 from app.services.calendar import publish
 from app.models.protocol import stamp, now, TZ
 
@@ -18,16 +18,18 @@ def main():
     store=Store(folder)
     with store.tx(True) as db:
         if db.execute('SELECT count(*) FROM interests').fetchone()[0]:return
+        aid=db.execute("SELECT id FROM accounts WHERE kind='public'").fetchone()[0]
         ids=[]
-        for keyword,condition in [('艺术展览','上海 · 周末'),('现场音乐','小型现场与音乐节'),('网球赛事','关注决赛日程')]:
-            i=uid();ids.append(i);db.execute('INSERT INTO interests VALUES(?,?,?,?,?,NULL)',(i,keyword,condition,canonical([norm(keyword),norm(condition)]),stamp()))
-        db.execute('UPDATE settings SET config_version=4')
+        for keyword,condition in [('足球比赛','成年男子国家队 · 正式比赛'),('演唱会','上海 · 周末 · 喜欢的歌手'),('本地活动','上海 · 市集、展览与城市漫步'),('产品发布会','手机与 AI 工具 · 官方发布')]:
+            i=uid();ids.append(i);db.execute('INSERT INTO interests(id,keyword,conditions,normalized_key,created_at,deleted_at,account_id) VALUES(?,?,?,?,?,NULL,?)',(i,keyword,condition,canonical([norm(keyword),norm(condition)]),stamp(),aid))
+        db.execute('UPDATE settings SET config_version=5 WHERE account_id=?',(aid,))
+        for label in ('林同学','陈先生','周末观众'): create_invite(db,label)
         ctx=context(db)
     events=[];today=now().astimezone(TZ).date()
-    for n,(title,place,offset) in enumerate([('光与空间：秋日艺术展','上海 · 演示艺术空间',2),('城市露台音乐现场','上海 · 演示音乐厅',5),('秋季网球公开赛决赛','演示网球中心',4),('周末摄影展','上海 · 演示画廊',6)]):
+    for n,(title,place,offset) in enumerate([('中国男足国际邀请赛','上海 · 海风体育场',1),('星光巡回演唱会 · 上海站','上海 · 星河体育馆',2),('秋日生活市集','上海 · 河岸文化街区',3),('新一代智能手机秋季发布会','线上直播',4)]):
         d=today+timedelta(days=offset)
-        timing={'kind':'date','start_date':str(d),'end_date_exclusive':str(d+timedelta(days=2))} if n in (0,3) else {'kind':'timed','start':str(d)+'T19:30:00+08:00','end':str(d)+'T21:30:00+08:00'}
-        events.append(dict(event_id=None,base_version=0,source_key={'namespace':'example.org','id':f'demo-{n}'},interest_ids=[ids[n%3]],title=title,location=place,status='confirmed',timing=timing,evidence=[{'url':f'https://example.org/demo/{n}','excerpt':'仅用于网站界面和协议演示，活动、地点及时间均为虚构。','source_timezone':'Asia/Shanghai','verified_at':ctx['server_time']}]))
+        timing={'kind':'date','start_date':str(d),'end_date_exclusive':str(d+timedelta(days=3))} if n==2 else {'kind':'timed','start':str(d)+'T19:30:00+08:00','end':str(d)+'T21:30:00+08:00'}
+        events.append(dict(event_id=None,base_version=0,source_key={'namespace':'example.org','id':f'demo-{n}'},interest_ids=[ids[n%4]],title=title,location=place,status='confirmed',timing=timing,evidence=[{'url':f'https://example.org/demo/{n}','excerpt':'市集汇集独立手作、街头音乐和秋日美食。每日 10:00–20:00 开放，适合周末与朋友一同逛逛。' if n==2 else '活动将于上述日期举行，详情和参与方式以主办方发布为准。','source_timezone':'Asia/Shanghai','verified_at':ctx['server_time']}]))
     batch=dict(protocol_version='1.0',batch_id=uid(),state_epoch=ctx['state_epoch'],config_version=ctx['config_version'],collection_started_at=ctx['server_time'],generated_at=stamp(),window=ctx['window'],result='complete',warnings=[],events=events,candidates=[])
     result,status=import_batch(store,batch)
     if status!=202:raise RuntimeError(result)

@@ -793,3 +793,74 @@ def test_v1_database_opens_as_public_account(tmp_path):
     with sqlite3.connect(db_path) as db:
         assert db.execute("SELECT calendar_token FROM accounts WHERE kind='public'").fetchone()[0]=='rotated-calendar-secret'
         assert db.execute('SELECT count(*) FROM accounts').fetchone()[0]==1
+
+
+def test_restore_preserves_invite_access_and_disables_unverifiable_accounts(tmp_path):
+    from app.storage.database import Store
+    from app.services.domain import create_invite, reissue_invite, revoke_invite
+    from app.services.maintenance import restore_database
+    from app.config import token_hash, agent_secret, subscription_secret
+    store=Store(tmp_path)
+    with store.tx(True) as db:
+        revoked=create_invite(db,'撤销')
+        active_invite=create_invite(db,'有效')
+    backup=store.backup(force=True)
+    with store.tx(True) as db:
+        reissue_invite(db,revoked['id']);revoke_invite(db,revoked['id'])
+        current=reissue_invite(db,active_invite['id'])
+        new_agent=agent_secret();new_calendar=subscription_secret()
+        db.execute('UPDATE accounts SET agent_hash=?,agent_token=?,calendar_hash=?,calendar_token=? WHERE id=?',(token_hash(new_agent),new_agent,token_hash(new_calendar),new_calendar,active_invite['id']))
+        added=create_invite(db,'备份后新增')
+    preview=restore_database(tmp_path,backup)
+    assert preview['account_access_preserved']==3 and preview['backup_accounts_disabled']==0
+    report=restore_database(tmp_path,backup,apply=True)
+    assert report['credentials_restored'] is False
+    with store.tx() as db:
+        rows={r['id']:r for r in db.execute("SELECT * FROM accounts WHERE kind='invite'")}
+        assert rows[revoked['id']]['revoked_at'] and rows[revoked['id']]['login_hash']!=token_hash(revoked['token'])
+        assert rows[active_invite['id']]['login_hash']==token_hash(current['token'])
+        assert rows[active_invite['id']]['agent_token']==new_agent and rows[active_invite['id']]['calendar_token']==new_calendar
+        assert rows[added['id']]['login_hash']==token_hash(added['token'])
+        assert db.execute('SELECT active_publication_id FROM settings WHERE account_id=?',(added['id'],)).fetchone()[0]
+        epochs=[r[0] for r in db.execute('SELECT state_epoch FROM settings')]
+        assert len(epochs)==len(set(epochs))
+    # A missing live database cannot attest that any backup invitation is still valid.
+    store.path.unlink()
+    report=restore_database(tmp_path,backup,apply=True)
+    assert report['backup_accounts_disabled']==2
+    with store.tx() as db:
+        assert all(r['revoked_at'] and r['login_hash'] is None and r['agent_hash'] is None for r in db.execute("SELECT * FROM accounts WHERE kind='invite'"))
+
+
+def test_invitee_resolves_own_candidates_and_cannot_resolve_others(site):
+    c,a,t=site
+    created=c.post('/api/v1/admin/invites',json={'label':'核验'}).json()
+    public_interest=interest(c);public_batch=batch(c,[public_interest]);upload(c,t,public_batch)
+    upload(c,t,batch(c,[public_interest]))
+    public_candidate=c.get('/api/v1/candidates').json()['items'][0]
+    relogin(c,created['token'])
+    mine=interest(c,'自己的兴趣');agent_token=c.get('/api/v1/agent/token').json()['token']
+    # Use the account Agent without a browser session, then return to the invitee session.
+    c.cookies.clear();personal={'agent':agent_token};c.headers['Authorization']='Bearer '+agent_token
+    first=batch(c,[mine]);assert upload(c,personal,first).status_code==202
+    assert upload(c,personal,batch(c,[mine])).status_code==200
+    del c.headers['Authorization']
+    relogin(c,created['token'])
+    candidate=c.get('/api/v1/candidates').json()['items'][0]
+    epoch=c.get('/api/v1/status').json()['state_epoch']
+    b={'state_epoch':epoch,'version':candidate['version'],'action':'reject'}
+    assert c.post('/api/v1/candidates/'+candidate['id']+'/resolve',json=b).status_code==200
+    assert c.post('/api/v1/candidates/'+public_candidate['id']+'/resolve',json=b).status_code==404
+    c.cookies.clear()
+    assert c.post('/api/v1/candidates/'+candidate['id']+'/resolve',json=b,headers={'Authorization':'Bearer '+agent_token}).status_code==403
+
+
+def test_upload_rate_limit_is_per_account(site):
+    c,a,t=site
+    created=c.post('/api/v1/admin/invites',json={'label':'限流'}).json()
+    relogin(c,created['token']);agent_token=c.get('/api/v1/agent/token').json()['token'];c.cookies.clear()
+    for _ in range(10):
+        assert c.post('/api/v1/batches',json={},headers={'Authorization':'Bearer '+t['agent']}).status_code==422
+    assert c.post('/api/v1/batches',json={},headers={'Authorization':'Bearer '+t['agent']}).status_code==429
+    response=c.post('/api/v1/batches',json={},headers={'Authorization':'Bearer '+agent_token})
+    assert response.status_code==422

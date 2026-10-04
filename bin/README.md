@@ -71,7 +71,7 @@ uv run --directory ../src python -m app stop --data-dir ../bin/data
 
 ## 备份与恢复
 
-备份和恢复都使用数据目录里的 SQLite 文件，不包含凭据。恢复不会让已轮换的旧令牌重新生效。在 `bin` 目录执行：
+备份是 SQLite 整库，包含邀请账户的凭据，请按敏感文件保管。管理员和公开 Agent 的凭据文件需单独保存。恢复时保留当前邀请账户的令牌和撤销状态，旧令牌不会重新生效；备份之后新增的账户保留访问权限，但兴趣和日历为空。当前库丢失或无法读取时，备份中的邀请账户全部禁用，需要重新邀请。在 `bin` 目录执行：
 
 ```sh
 uv run --directory ../src python -m app backup --data-dir ../bin/data

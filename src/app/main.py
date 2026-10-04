@@ -287,8 +287,9 @@ def create_app(config=None):
         return answer(request,result)
     @app.post('/api/v1/batches')
     async def upload(request:Request):
-        agent(request);rate(('upload','agent'),10)
+        agent(request)
         with app.state.store.tx() as db: aid=account_id_for(request, db)
+        rate(('upload',aid),10)
         result,status=import_batch(app.state.store,await body(request),aid);return answer(request,result,status)
     @app.get('/api/v1/batches')
     def batches(request:Request):
@@ -315,7 +316,7 @@ def create_app(config=None):
         return answer(request,{'items':rows})
     @app.post('/api/v1/candidates/{cid}/resolve')
     async def candidate_resolve(cid:str,request:Request):
-        admin(request);b=await body(request)
+        signed_in(request);b=await body(request)
         with app.state.store.tx(True) as db: resolve(db,cid,b,account_id_for(request, db))
         return answer(request,{'ok':True})
     @app.get('/api/v1/status')
