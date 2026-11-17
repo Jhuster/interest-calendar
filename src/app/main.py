@@ -4,7 +4,7 @@ import os
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode, quote
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, HTMLResponse, Response, RedirectResponse
@@ -20,6 +20,11 @@ from app.services.calendar import publish
 from app.services.maintenance import record_backup, rotate_service_log, startup_token_message
 
 ROOT=Path(__file__).parent
+ACCOUNT_APPLICATION_EMAIL='lujun.hust@gmail.com'
+ACCOUNT_APPLICATION_MAILTO='mailto:'+ACCOUNT_APPLICATION_EMAIL+'?'+urlencode({
+    'subject':'兴趣日历账号申请',
+    'body':'你好，我想申请一个兴趣日历账号。\n\n用户名（仅支持英文字母，区分大小写）：\n',
+},quote_via=quote)
 
 def _same(left, right):
     if not isinstance(left,str) or not isinstance(right,str) or len(left)!=len(right): return False
@@ -33,7 +38,7 @@ def calendar_feed(path):
 def anonymous_ok(path, method):
     if path in ('/login','/health') or calendar_feed(path) or path.startswith('/static/'): return True
     if path=='/api/v1/session' and method=='POST': return True
-    if method in ('GET','HEAD') and path in ('/','/interests','/subscribe','/api/v1/events','/api/v1/interests','/api/v1/status'): return True
+    if method in ('GET','HEAD') and path in ('/','/interests','/subscribe','/apply','/api/v1/events','/api/v1/interests','/api/v1/status'): return True
     if method in ('GET','HEAD') and path.startswith('/api/v1/events/'): return True
     return False
 
@@ -390,6 +395,7 @@ def create_app(config=None):
     @app.get('/',response_class=HTMLResponse)
     @app.get('/interests',response_class=HTMLResponse)
     @app.get('/subscribe',response_class=HTMLResponse)
+    @app.get('/apply',response_class=HTMLResponse)
     @app.get('/model',response_class=HTMLResponse)
     @app.get('/admin',response_class=HTMLResponse)
     @app.get('/candidates',response_class=HTMLResponse)
@@ -397,7 +403,7 @@ def create_app(config=None):
     def page(request:Request):
         if request.url.path in ('/admin','/model') and request.state.role not in ('admin','invitee'):
             raise Problem('FORBIDDEN','没有权限查看此页面',403)
-        if request.url.path not in ('/','/login','/interests','/subscribe') and request.state.role not in ('admin','invitee'):
+        if request.url.path not in ('/','/login','/interests','/subscribe','/apply') and request.state.role not in ('admin','invitee'):
             raise Problem('FORBIDDEN','此操作需要登录',403)
         role=request.state.role if request.state.role in ('admin','invitee') else ''
         label='';kind=''
@@ -409,5 +415,5 @@ def create_app(config=None):
             with app.state.store.tx() as db:
                 row=db.execute('SELECT label,kind FROM accounts WHERE id=?',(request.state.session['account_id'],)).fetchone()
                 label=row['label'];kind=row['kind']
-        return templates.TemplateResponse(request=request,name='index.html',context={'page':request.url.path,'csrf':getattr(request.state,'session',{}).get('csrf',''),'role':role,'account_label':label,'account_kind':kind})
+        return templates.TemplateResponse(request=request,name='index.html',context={'page':request.url.path,'csrf':getattr(request.state,'session',{}).get('csrf',''),'role':role,'account_label':label,'account_kind':kind,'account_application_email':ACCOUNT_APPLICATION_EMAIL,'account_application_mailto':ACCOUNT_APPLICATION_MAILTO})
     return app
