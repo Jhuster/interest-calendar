@@ -2,14 +2,36 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf }}"><title>兴趣日历 · 把期待放进日常</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/agent-settings.css"><script src="/static/app.js" defer></script></head>
 <body data-page="{{ page }}" data-role="{{ role }}"><header><a class="brand" href="/"><span class="brand-icon">日</span>兴趣日历</a><nav aria-label="主导航"><a href="/" {% if page == '/' %}aria-current="page"{% endif %}>日程</a><a href="/interests" {% if page == '/interests' %}aria-current="page"{% endif %}>兴趣</a><a href="/subscribe" {% if page == '/subscribe' %}aria-current="page"{% endif %}>订阅</a>{% if role %}<a href="/model" {% if page == '/model' %}aria-current="page"{% endif %}>大模型</a><a href="/admin" {% if page == '/admin' %}aria-current="page"{% endif %}>管理后台</a>{% endif %}</nav><span class="header-note">为值得期待的事留个位置</span>{% if role %}<button id="logout" class="secondary header-logout" type="button">退出登录</button>{% else %}<button id="open-login" class="secondary header-logout" type="button">登录</button>{% endif %}</header>
 <main id="main"><div id="message" role="status" aria-live="polite" hidden></div>
-{% if not role %}<dialog id="login-dialog" aria-labelledby="login-title"><form id="login-form"><h2 id="login-title">登录</h2><label for="token">登录令牌</label><input id="token" name="token" type="password" autocomplete="current-password" required><p id="login-error" class="small" hidden></p><div class="actions"><button type="submit">登录</button><button id="close-login" class="secondary" type="button">取消</button></div></form></dialog>{% endif %}
+{% if not role %}<dialog id="login-dialog" aria-labelledby="login-title"><form id="login-form"><h2 id="login-title">登录</h2><label for="token">登录令牌</label><input id="token" name="token" type="password" autocomplete="current-password" required><p id="login-error" class="small" hidden></p><div class="actions"><button type="submit">登录</button><button id="close-login" class="secondary" type="button">取消</button></div><p class="login-apply-note">还没有账号？<a href="/apply">申请账号 ↗</a></p></form></dialog>{% endif %}
 {% if page == '/login' %}
 <section class="login panel"><div class="eyebrow">你的下一份期待</div><h1>欢迎回来</h1><p class="muted">使用页头右上角的登录，填写登录令牌。</p></section>
 {% else %}
 {% if page == '/' %}
-<div class="page-heading"><div><div class="eyebrow" id="today-label">生活里的期待</div><h1>接下来，值得期待</h1><p class="muted">把你关注的事，安排进日常。</p></div></div>
+<div class="page-heading"><div><div class="eyebrow" id="today-label">生活里的期待</div><h1>接下来，值得期待</h1><p class="muted">把你关注的事，安排进日常。</p></div>{% if not role %}<a class="button secondary" href="/apply">申请账号 ↗</a>{% endif %}</div>
 <div class="summary-strip"><span id="count-label">正在读取日程…</span><span id="publication-label"></span>{% if role %}<a id="candidate-link" href="/candidates">待核验</a>{% endif %}</div>
 <section class="panel schedule"><div class="toolbar"><div class="segmented" aria-label="日程视图"><button id="list-view" class="active" aria-pressed="true">近期列表</button><button id="month-view" aria-pressed="false">月历</button></div><label class="filter">关注范围<select id="interest-filter"><option value="">全部兴趣</option></select></label><div id="month-controls" hidden><button id="previous-month" aria-label="上个月">‹</button><strong id="month-label"></strong><button id="next-month" aria-label="下个月">›</button></div></div><div id="schedule-content" aria-live="polite"></div></section>
+{% elif page == '/apply' %}
+<div class="page-heading"><div><div class="eyebrow">为喜欢的事留个位置</div><h1>申请你的兴趣日历</h1><p class="muted">目前采用邀请制。发一封邮件，申请你的专属账号。</p></div></div>
+<div class="apply-layout">
+  <section class="panel apply-intro" aria-labelledby="apply-how-title">
+    <h2 id="apply-how-title">从一份兴趣开始</h2>
+    <p class="muted">足球比赛、演唱会、本地活动、产品发布会……把值得期待的事，放进自己的日历。</p>
+    <ol class="apply-steps">
+      <li><span class="apply-step-number" aria-hidden="true">01</span><div><h3>发邮件申请</h3><p>填写希望使用的用户名，仅支持英文字母，区分大小写。</p></div></li>
+      <li><span class="apply-step-number" aria-hidden="true">02</span><div><h3>等待邀请回复</h3><p>审核后，我会创建账号并通过邮件回复你的专属登录令牌。</p></div></li>
+      <li><span class="apply-step-number" aria-hidden="true">03</span><div><h3>开启自己的日历</h3><p>收到令牌后，点击右上角「登录」，添加兴趣并连接你的 Agent。</p></div></li>
+    </ol>
+  </section>
+  <section class="panel apply-contact" aria-labelledby="apply-contact-title">
+    <div class="eyebrow">申请邀请</div><h2 id="apply-contact-title">下一份期待，从这里开始</h2>
+    <p class="muted">点击下方按钮打开邮件应用，申请主题和内容已为你填好。</p>
+    <a class="button apply-mail" href="{{ account_application_mailto }}">发送申请邮件 ↗</a>
+    <p class="small muted apply-email-help">也可以直接发送邮件至</p>
+    <a class="apply-email" href="{{ account_application_mailto }}">{{ account_application_email }}</a>
+    <p class="small muted">账号由人工审核创建，请等待邮件回复，并妥善保存收到的登录令牌。</p>
+    <a class="small" href="/">先看看日程 →</a>
+  </section>
+</div>
 {% elif page == '/interests' %}
 <div class="page-heading"><div><div class="eyebrow">从喜欢的事开始</div><h1>兴趣</h1><p class="muted">在这里配置兴趣。下一次采集会使用最新设置。未登录时只能查看。</p></div></div>
 <div class="interest-layout{% if not role %} single{% endif %}">{% if role %}<section class="panel"><h2>添加一份期待</h2><form id="interest-form"><label for="keyword">关注什么 <span class="muted">必填</span></label><input id="keyword" maxlength="200" placeholder="例如：网球赛事、艺术展览" required><label for="conditions">补充条件</label><textarea id="conditions" maxlength="2000" rows="4" placeholder="例如：只关注上海，优先周末"></textarea><button type="submit">＋ 添加兴趣</button></form></section>{% endif %}<section id="interest-content" aria-live="polite"></section></div>

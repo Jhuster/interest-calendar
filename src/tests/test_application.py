@@ -943,3 +943,28 @@ def test_restore_invalidates_persistent_browser_sessions(tmp_path):
     with TestClient(create_app(config),base_url=config.base_url) as c:
         c.cookies.set('session',sid)
         assert c.get('/api/v1/status').json()['role'] is None
+
+
+def test_invitation_application_is_public_and_opens_user_email(site):
+    import html,re
+    from urllib.parse import urlparse,parse_qs
+    c,a,t=site
+    with a.state.store.tx() as db: before=db.execute('SELECT count(*) FROM accounts').fetchone()[0]
+    assert c.get('/apply').status_code==200
+    assert c.delete('/api/v1/session').status_code==200
+    home=c.get('/')
+    assert 'href="/apply"' in home.text and '还没有账号？' in home.text
+    application=c.get('/apply',follow_redirects=False)
+    assert application.status_code==200 and 'session' not in application.headers.get('set-cookie','')
+    assert '申请你的兴趣日历' in application.text and '发送申请邮件' in application.text
+    assert '审核后' in application.text and '专属登录令牌' in application.text
+    links=re.findall(r'href="(mailto:[^"]+)"',application.text)
+    assert links
+    for link in links:
+        parsed=urlparse(html.unescape(link));query=parse_qs(parsed.query)
+        assert parsed.path=='lujun.hust@gmail.com'
+        assert query['subject']==['兴趣日历账号申请']
+        assert '用户名（仅支持英文字母，区分大小写）：' in query['body'][0]
+        assert '称呼：' not in query['body'][0] and '想关注的兴趣：' not in query['body'][0]
+    with a.state.store.tx() as db: assert db.execute('SELECT count(*) FROM accounts').fetchone()[0]==before
+    assert c.post('/api/v1/admin/invites',json={'label':'匿名不能自动注册'}).status_code==401
