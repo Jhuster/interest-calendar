@@ -864,3 +864,82 @@ def test_upload_rate_limit_is_per_account(site):
     assert c.post('/api/v1/batches',json={},headers={'Authorization':'Bearer '+t['agent']}).status_code==429
     response=c.post('/api/v1/batches',json={},headers={'Authorization':'Bearer '+agent_token})
     assert response.status_code==422
+
+
+@pytest.mark.parametrize('role', ['admin', 'invitee'])
+def test_login_persists_across_service_and_browser_restart(tmp_path, role):
+    from app.storage.sessions import SESSION_MAX_AGE
+    from app.services.domain import create_invite, reissue_invite
+    config=Config(tmp_path,'http://127.0.0.1:8787',True);tokens=initialize(config)
+    app=create_app(config)
+    with TestClient(app,base_url=config.base_url) as c:
+        token=tokens['admin']
+        if role=='invitee':
+            with app.state.store.tx(True) as db: invitation=create_invite(db,'持久登录')
+            token=invitation['token']
+        c.headers['Origin']=config.base_url
+        login=c.post('/api/v1/session',json={'token':token})
+        assert login.status_code==200
+        assert f'Max-Age={SESSION_MAX_AGE}' in login.headers['set-cookie']
+        assert 'HttpOnly' in login.headers['set-cookie'] and 'SameSite=strict' in login.headers['set-cookie']
+        sid=c.cookies.get('session');csrf=login.json()['csrf_token']
+    assert (tmp_path/'sessions.sqlite3').stat().st_mode & 0o777==0o600
+    assert sid.encode() not in (tmp_path/'sessions.sqlite3').read_bytes()
+    restarted=create_app(config)
+    with TestClient(restarted,base_url=config.base_url) as c:
+        c.cookies.set('session',sid)
+        assert c.get('/api/v1/status').json()['role']==role
+        assert c.get('/model').status_code==200
+        c.headers.update({'Origin':config.base_url,'X-CSRF-Token':csrf})
+        interest(c,'重启后仍可操作')
+        # Revocation of the login credential must also invalidate saved sessions.
+        if role=='admin': initialize(config,'admin')
+        else:
+            with restarted.state.store.tx(True) as db: reissue_invite(db,invitation['id'])
+        assert c.get('/api/v1/status').json()['role'] is None
+        assert c.get('/api/v1/agent/token').status_code==401
+
+
+def test_persistent_session_logout_expiry_and_relogin(tmp_path):
+    import sqlite3
+    config=Config(tmp_path,'http://127.0.0.1:8787',True);tokens=initialize(config)
+    with TestClient(create_app(config),base_url=config.base_url) as c:
+        c.headers['Origin']=config.base_url
+        login=c.post('/api/v1/session',json={'token':tokens['admin']})
+        old_sid=c.cookies.get('session')
+        with sqlite3.connect(tmp_path/'sessions.sqlite3') as db:
+            db.execute('UPDATE sessions SET expires=0')
+        # Logging in directly with an expired cookie must retain the new cookie.
+        response=c.post('/api/v1/session',json={'token':tokens['admin']})
+        assert response.status_code==200 and c.cookies.get('session')!=old_sid
+        assert 'Max-Age=2592000' in response.headers['set-cookie']
+        assert 'Max-Age=0' not in response.headers['set-cookie']
+        sid=c.cookies.get('session');c.headers['X-CSRF-Token']=response.json()['csrf_token']
+        assert c.delete('/api/v1/session').status_code==200
+    with TestClient(create_app(config),base_url=config.base_url) as c:
+        c.cookies.set('session',sid)
+        assert c.get('/api/v1/status').json()['role'] is None
+        assert c.get('/model').status_code==403
+        c.headers['Origin']=config.base_url
+        assert c.post('/api/v1/session',json={'token':tokens['admin']}).status_code==200
+        with sqlite3.connect(tmp_path/'sessions.sqlite3') as db:
+            db.execute('UPDATE sessions SET expires=0')
+        response=c.get('/api/v1/status')
+        assert response.json()['role'] is None
+        assert 'Max-Age=0' in response.headers['set-cookie']
+
+
+def test_restore_invalidates_persistent_browser_sessions(tmp_path):
+    from app.services.maintenance import restore_database
+    config=Config(tmp_path,'http://127.0.0.1:8787',True);tokens=initialize(config);app=create_app(config)
+    with TestClient(app,base_url=config.base_url) as c:
+        c.headers['Origin']=config.base_url
+        assert c.post('/api/v1/session',json={'token':tokens['admin']}).status_code==200
+        sid=c.cookies.get('session');backup=app.state.store.backup(force=True)
+    restore_database(tmp_path,backup,apply=False)
+    assert (tmp_path/'sessions.sqlite3').exists()
+    restore_database(tmp_path,backup,apply=True)
+    assert not (tmp_path/'sessions.sqlite3').exists()
+    with TestClient(create_app(config),base_url=config.base_url) as c:
+        c.cookies.set('session',sid)
+        assert c.get('/api/v1/status').json()['role'] is None

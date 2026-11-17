@@ -14,6 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.config import Config, token_hash, initialize
 from app.models.protocol import *
 from app.storage.database import Store
+from app.storage.sessions import SessionStore, SESSION_MAX_AGE
 from app.services.domain import *
 from app.services.calendar import publish
 from app.services.maintenance import record_backup, rotate_service_log, startup_token_message
@@ -37,7 +38,7 @@ def anonymous_ok(path, method):
     return False
 
 def create_app(config=None):
-    config=config or Config.environment();config.validate();sessions={};limits=defaultdict(deque)
+    config=config or Config.environment();config.validate();sessions=SessionStore(config.data_dir);limits=defaultdict(deque)
     def attempt_publish():
         try: publish(app.state.store)
         except Exception:
@@ -64,7 +65,7 @@ def create_app(config=None):
         try:
             credential_path=config.data_dir/'credentials.json'
             print(startup_token_message(config.saved_token('admin'),credential_path.resolve(),sys.stdout.isatty()),flush=True)
-            app.state.store=Store(config.data_dir,config.saved_token('calendar'));app.state.backup_error=None;attempt_publish();record_backup(app.state.store,app.state)
+            app.state.store=Store(config.data_dir,config.saved_token('calendar'));sessions.initialize();app.state.backup_error=None;attempt_publish();record_backup(app.state.store,app.state)
             pid_path.write_text(str(os.getpid())+'\n')
             pid_path.chmod(0o600)
             logging.getLogger('uvicorn.error').info('浏览器访问地址：%s/', config.base_url.rstrip('/'))
@@ -84,7 +85,7 @@ def create_app(config=None):
                 task.cancel()
                 try: await task
                 except asyncio.CancelledError: pass
-            lock.close();sessions.clear();pid_path.unlink(missing_ok=True)
+            lock.close();pid_path.unlink(missing_ok=True)
     app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
     app.state.config=config
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=config.allowed_hosts())
@@ -103,7 +104,7 @@ def create_app(config=None):
         try:
             public=anonymous_ok(request.url.path, request.method)
             credentials=config.credentials(); cookie=request.cookies.get('session');session=sessions.get(cookie)
-            request.state.clear_session=False
+            if cookie and session is None: request.state.clear_session=True
             if session and not session_ok(session, credentials):
                 sessions.pop(cookie,None);session=None;request.state.clear_session=True
             if session: request.state.role=session['kind'];request.state.session=session
@@ -192,13 +193,15 @@ def create_app(config=None):
         digest=token_hash(token); sid=secrets.token_urlsafe(32); csrf=secrets.token_urlsafe(32)
         if _same(digest, creds['admin']):
             with app.state.store.tx() as db: account_id=db.execute("SELECT id FROM accounts WHERE kind='public'").fetchone()[0]
-            sessions[sid]={'kind':'admin','account_id':account_id,'csrf':csrf,'expires':time.time()+8*3600,'admin_hash':creds['admin']}
+            sessions[sid]={'kind':'admin','account_id':account_id,'csrf':csrf,'expires':time.time()+SESSION_MAX_AGE,'admin_hash':creds['admin']}
         else:
             with app.state.store.tx() as db:
                 row=db.execute("SELECT id,login_hash,revoked_at FROM accounts WHERE kind='invite' AND login_hash=?",(digest,)).fetchone()
             if not row or row['revoked_at'] or not _same(digest, row['login_hash']): raise Problem('AUTH_REQUIRED','令牌不正确',401)
-            sessions[sid]={'kind':'invitee','account_id':row['id'],'csrf':csrf,'expires':time.time()+8*3600,'login_hash':row['login_hash']}
-        response=answer(request,{'csrf_token':csrf});response.set_cookie('session',sid,httponly=True,secure=urlparse(config.base_url).scheme=='https',samesite='strict',max_age=8*3600)
+            sessions[sid]={'kind':'invitee','account_id':row['id'],'csrf':csrf,'expires':time.time()+SESSION_MAX_AGE,'login_hash':row['login_hash']}
+        sessions.pop(request.cookies.get('session'),None)
+        request.state.clear_session=False
+        response=answer(request,{'csrf_token':csrf});response.set_cookie('session',sid,httponly=True,secure=urlparse(config.base_url).scheme=='https',samesite='strict',max_age=SESSION_MAX_AGE)
         return response
     @app.delete('/api/v1/session')
     def logout(request:Request):

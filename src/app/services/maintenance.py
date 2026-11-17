@@ -258,7 +258,7 @@ def _render(report):
     lines.append('管理员和公开 Agent 凭据仍使用当前 credentials.json；邀请账户沿用当前令牌和撤销状态，旧令牌不会复活。')
     lines.append(f"保留当前邀请账户访问状态：{report['account_access_preserved']} 个；禁用缺少当前访问记录的备份账户：{report['backup_accounts_disabled']} 个。")
     lines.append('备份之后新增的邀请账户保留访问状态，日历和兴趣恢复为空；当前库缺失时，备份中的邀请账户全部禁用，需重新邀请。')
-    lines.append('会话只保存在进程内存中；恢复前须停止服务，停止后会话即清空。')
+    lines.append('登录状态单独持久保存，有效期30天；普通重启保留，执行恢复会清空，需重新登录。')
     lines.append('每次恢复生成新的 state_epoch，并增加一次 data_revision 以触发新快照。')
     lines.append('旧 state_epoch 的批次只作为恢复前记录显示，不能与新的发布进度比较；未完成的旧批次需要重新采集核验。')
     if report['applied']:
@@ -357,6 +357,8 @@ def restore_database(directory, backup, apply=False):
                 epoch=str(uuid.uuid4())
                 if live.exists(): report['preserved']=_preserve(directory,live)
                 _apply_adjustments(checked,report['sequence_adjustments'],epoch)
+                from app.storage.sessions import invalidate_sessions
+                invalidate_sessions(directory)
                 _install(checked,live)
                 report['applied']=True
                 report['state_epoch']=epoch

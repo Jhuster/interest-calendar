@@ -67,7 +67,7 @@ CALENDAR_KEY=/etc/interest-calendar/privkey.pem \
 uv run --directory ../src python -m app stop --data-dir ../bin/data
 ```
 
-命令会结束占用该数据目录的服务进程。恢复数据前必须先停止；会话只保存在进程内存中，停止后即失效，需要重新登录。
+命令会结束占用该数据目录的服务进程。恢复数据前必须先停止；登录状态有效期30天，单独保存在数据目录的 `sessions.sqlite3` 中。普通停止、重启服务会保留；执行数据库恢复会清空，需要重新登录。
 
 ## 备份与恢复
 
