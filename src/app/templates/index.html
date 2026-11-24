@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf }}"><title>兴趣日历 · 把期待放进日常</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/agent-settings.css"><script src="/static/app.js" defer></script></head>
-<body data-page="{{ page }}" data-role="{{ role }}"><header><a class="brand" href="/"><span class="brand-icon">日</span>兴趣日历</a><nav aria-label="主导航"><a href="/" {% if page == '/' %}aria-current="page"{% endif %}>日程</a><a href="/interests" {% if page == '/interests' %}aria-current="page"{% endif %}>兴趣</a><a href="/subscribe" {% if page == '/subscribe' %}aria-current="page"{% endif %}>订阅</a>{% if role %}<a href="/model" {% if page == '/model' %}aria-current="page"{% endif %}>大模型</a><a href="/admin" {% if page == '/admin' %}aria-current="page"{% endif %}>管理后台</a>{% endif %}</nav><span class="header-note">为值得期待的事留个位置</span>{% if role %}<button id="logout" class="secondary header-logout" type="button">退出登录</button>{% else %}<button id="open-login" class="secondary header-logout" type="button">登录</button>{% endif %}</header>
+<body data-page="{{ page }}" data-role="{{ role }}"><header><a class="brand" href="/"><span class="brand-icon">日</span>兴趣日历</a><nav aria-label="主导航"><a href="/" {% if page == '/' %}aria-current="page"{% endif %}>日程</a><a href="/interests" {% if page == '/interests' %}aria-current="page"{% endif %}>兴趣</a><a href="/subscribe" {% if page == '/subscribe' %}aria-current="page"{% endif %}>订阅</a>{% if role %}<a href="/model" {% if page == '/model' %}aria-current="page"{% endif %}>大模型</a><a href="/admin" {% if page == '/admin' %}aria-current="page"{% endif %}>管理后台</a>{% if role == 'admin' %}<a href="/usage" {% if page == '/usage' %}aria-current="page"{% endif %}>用量统计</a>{% endif %}{% endif %}</nav><span class="header-note">为值得期待的事留个位置</span>{% if role %}<button id="logout" class="secondary header-logout" type="button">退出登录</button>{% else %}<button id="open-login" class="secondary header-logout" type="button">登录</button>{% endif %}</header>
 <main id="main"><div id="message" role="status" aria-live="polite" hidden></div>
 {% if not role %}<dialog id="login-dialog" aria-labelledby="login-title"><form id="login-form"><h2 id="login-title">登录</h2><label for="token">登录令牌</label><input id="token" name="token" type="password" autocomplete="current-password" required><p id="login-error" class="small" hidden></p><div class="actions"><button type="submit">登录</button><button id="close-login" class="secondary" type="button">取消</button></div><p class="login-apply-note">还没有账号？<a href="/apply">申请账号 ↗</a></p></form></dialog>{% endif %}
 {% if page == '/login' %}
@@ -64,8 +64,24 @@
   <p id="agent-token-help" class="small muted">Agent 首次接入会向你询问令牌。选中上方令牌，复制并发送给你的 Agent 即可。</p>
 </section>
 <section class="panel"><h2>更新记录</h2><p id="version-detail"></p><a class="button secondary" href="/runs">查看运行记录</a></section>
+{% elif page == '/usage' %}
+<div class="page-heading"><div><div class="eyebrow">仅管理员 · 使用概览</div><h1>用量统计</h1><p class="muted" id="usage-period">正在读取用量…</p></div><div class="usage-actions"><label for="usage-range">统计范围</label><select id="usage-range"><option value="7">最近 7 天</option><option value="30">最近 30 天</option></select><button id="refresh-usage" class="secondary" type="button">刷新统计</button></div></div>
+<p id="usage-error" class="usage-alert" role="status" hidden></p>
+<section class="panel usage-traffic" aria-labelledby="traffic-title">
+  <div class="usage-traffic-heading"><h2 id="traffic-title">网站访问</h2><div class="usage-chart-legend"><span class="legend-pv">PV · 页面浏览</span><span class="legend-uv">UV · 独立访客</span></div></div>
+  <div class="usage-traffic-totals"><div><span>PV · 页面浏览次数</span><strong id="traffic-pv">—</strong><small>页面访问与刷新次数</small></div><div><span>UV · 独立访客数</span><strong id="traffic-uv">—</strong><small>所选范围内按浏览器去重</small></div></div>
+  <div class="usage-chart-wrap" tabindex="0" role="region" aria-label="网站 PV 与 UV 每日趋势"><div id="usage-traffic-chart" class="usage-chart"></div></div>
+  <p class="small muted" id="traffic-note"></p>
+</section>
+<section class="usage-grid" id="usage-cards" aria-label="用量概览" aria-live="polite"></section>
+<div class="usage-panels">
+  <section class="panel"><h2>Agent 与日程核验</h2><p id="usage-last-received" class="small muted"></p><dl class="usage-facts" id="usage-quality"></dl><p class="small muted">批次按 ID 去重，重传不重复计数；不含鉴权失败和限流请求。核验次数按操作计算。</p></section>
+  <section class="panel"><h2>订阅使用情况</h2><dl class="usage-facts" id="usage-subscriptions"></dl><p class="small muted">日历客户端会自动刷新，订阅请求不等于人数或手机查看次数。只统计成功的 GET 请求，含 304，排除 HEAD 和无效地址。</p></section>
+</div>
+<section class="panel"><h2>每日用量</h2><div class="usage-table-wrap" tabindex="0" role="region" aria-label="每日用量明细"><table class="usage-table"><thead><tr><th scope="col">日期</th><th scope="col">PV</th><th scope="col">UV</th><th scope="col">活跃账号</th><th scope="col">成功批次</th><th scope="col">失败批次</th><th scope="col">新增日程</th><th scope="col">订阅请求</th></tr></thead><tbody id="usage-daily"></tbody></table></div></section>
+<p class="small muted usage-note" id="usage-note"></p>
 {% elif page == '/admin' %}
-<div class="page-heading"><div><h1>管理后台</h1><p class="muted">删除和重置只作用于当前登录的这一份。</p></div></div>
+<div class="page-heading"><div><h1>管理后台</h1><p class="muted">删除和重置只作用于当前登录的这一份。</p></div>{% if role == 'admin' %}<a class="button secondary" href="/usage">查看用量统计 →</a>{% endif %}</div>
 {% if role == 'admin' %}<section class="panel" id="accounts"><div class="eyebrow">仅管理员</div><h2>管理账号</h2><p class="muted">同一页列出全部账号。列表只显示账号信息。登录令牌只在创建或重新签发时显示一次，不能再查看。可以创建账户，也可以删除其他账户。删除后，该账号不再出现在列表里，登录令牌不能再登录，日历地址随之失效。管理员账号不能在这里删除。这里不显示兴趣内容，也不显示别人的 Agent 令牌。</p><form id="invite-form"><label for="invite-label">备注</label><div class="copy-row"><input id="invite-label" maxlength="80" placeholder="例如：姓名"><button type="submit">创建账户</button></div></form><pre id="account-token" hidden></pre><div id="account-list"></div></section>{% endif %}
 <section class="panel danger-panel" id="reset-panel"><h2>删除和重置</h2><p class="muted">只作用于当前登录的这一份。管理员登录时，清的是这一份日历，不会改去清其他账户。清空日历会保留兴趣；恢复初始状态会同时删除兴趣。操作不可撤销。</p><div class="actions"><button id="reset-calendar" class="secondary" type="button">清空日历数据</button><button id="reset-all" class="danger-button" type="button">恢复初始状态</button></div></section>
 {% elif page == '/candidates' %}

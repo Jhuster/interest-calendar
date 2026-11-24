@@ -1,4 +1,4 @@
-import asyncio, fcntl, hmac, secrets, sqlite3, sys, time
+import asyncio, fcntl, hmac, secrets, sqlite3, sys, time, re
 import logging
 import os
 from collections import defaultdict, deque
@@ -15,6 +15,8 @@ from app.config import Config, token_hash, initialize
 from app.models.protocol import *
 from app.storage.database import Store
 from app.storage.sessions import SessionStore, SESSION_MAX_AGE
+from app.storage.usage import UsageStore
+from app.services.usage import overview as usage_overview
 from app.services.domain import *
 from app.services.calendar import publish
 from app.services.maintenance import record_backup, rotate_service_log, startup_token_message
@@ -43,7 +45,7 @@ def anonymous_ok(path, method):
     return False
 
 def create_app(config=None):
-    config=config or Config.environment();config.validate();sessions=SessionStore(config.data_dir);limits=defaultdict(deque)
+    config=config or Config.environment();config.validate();sessions=SessionStore(config.data_dir);usage=UsageStore(config.data_dir);limits=defaultdict(deque)
     def attempt_publish():
         try: publish(app.state.store)
         except Exception:
@@ -70,7 +72,7 @@ def create_app(config=None):
         try:
             credential_path=config.data_dir/'credentials.json'
             print(startup_token_message(config.saved_token('admin'),credential_path.resolve(),sys.stdout.isatty()),flush=True)
-            app.state.store=Store(config.data_dir,config.saved_token('calendar'));sessions.initialize();app.state.backup_error=None;attempt_publish();record_backup(app.state.store,app.state)
+            app.state.store=Store(config.data_dir,config.saved_token('calendar'));sessions.initialize();usage.initialize();app.state.usage=usage;app.state.usage_error=False;app.state.backup_error=None;attempt_publish();record_backup(app.state.store,app.state)
             pid_path.write_text(str(os.getpid())+'\n')
             pid_path.chmod(0o600)
             logging.getLogger('uvicorn.error').info('浏览器访问地址：%s/', config.base_url.rstrip('/'))
@@ -123,6 +125,7 @@ def create_app(config=None):
                         row=db.execute("SELECT id,agent_hash,revoked_at FROM accounts WHERE kind='invite' AND agent_hash=?",(digest,)).fetchone()
                     if row and not row['revoked_at'] and row['agent_hash'] and hmac.compare_digest(digest,row['agent_hash']):
                         request.state.role='agent'; request.state.agent_account_id=row['id']
+            if request.url.path=='/usage' and request.state.role!='admin': raise Problem('FORBIDDEN','此页面仅管理员可查看',403)
             if request.url.path=='/settings': raise Problem('NOT_FOUND','页面不存在',404)
             if request.url.path in ('/admin','/model') and request.state.role not in ('admin','invitee'): raise Problem('FORBIDDEN','没有权限查看此页面',403)
             if not public and not request.state.role:
@@ -148,6 +151,27 @@ def create_app(config=None):
             if exc.status==429: response.headers['Retry-After']='60'
         except sqlite3.OperationalError:
             response=answer(request,{'errors':[Problem('TEMPORARILY_UNAVAILABLE','数据暂不可写，请稍后重试',503).error]},503)
+        if 200<=response.status_code<400 and request.method!='HEAD':
+            try:
+                if request.method=='GET' and response.status_code==200 and request.state.role!='agent' and not request.url.path.startswith('/static/') and response.headers.get('content-type','').startswith('text/html'):
+                    visitor=request.cookies.get('calendar_visitor','')
+                    if not re.fullmatch(r'[A-Za-z0-9_-]{32}',visitor):
+                        visitor=secrets.token_urlsafe(24)
+                        response.set_cookie('calendar_visitor',visitor,max_age=90*24*3600,httponly=True,secure=urlparse(config.base_url).scheme=='https',samesite='lax')
+                    usage.record_pageview(visitor)
+                    app.state.usage_error=False
+                subscription=getattr(request.state,'subscription_account',None)
+                if subscription and request.method=='GET':
+                    aid,is_public=subscription
+                    usage.record(aid,is_public=is_public,subscription=True,not_modified=response.status_code==304)
+                    app.state.usage_error=False
+                elif request.state.role in ('admin','invitee') and not calendar_feed(request.url.path) and not request.url.path.startswith('/static/') and request.url.path!='/health':
+                    session=request.state.session
+                    usage.record(session['account_id'],is_public=session['kind']=='admin',active=True)
+                    app.state.usage_error=False
+            except sqlite3.Error:
+                if not app.state.usage_error: logging.getLogger('uvicorn.error').exception('用量统计暂不可写；不影响正常使用')
+                app.state.usage_error=True
         response.headers['X-Content-Type-Options']='nosniff'
         response.headers['Referrer-Policy']='no-referrer'
         response.headers['Content-Security-Policy']="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
@@ -337,6 +361,11 @@ def create_app(config=None):
             s=settings(db,aid);pub=db.execute('SELECT data_revision,created_at FROM publications WHERE id=?',(s['active_publication_id'],)).fetchone()
             s.update(published_revision=pub['data_revision'] if pub else -1,published_at=pub['created_at'] if pub else None,candidate_count=db.execute("SELECT count(*) FROM candidates WHERE account_id=? AND state='pending'",(aid,)).fetchone()[0],last_received=db.execute('SELECT max(received_at) FROM batches WHERE account_id=?',(aid,)).fetchone()[0],last_imported=db.execute('SELECT max(received_at) FROM batches WHERE account_id=? AND status<400',(aid,)).fetchone()[0],base_url=config.base_url,subscription_url=subscription_for(account),development=config.development,backup_error=app.state.backup_error,role=role,account_kind=account['kind'],account_label=account['label'])
         return answer(request,s)
+    @app.get('/api/v1/admin/usage')
+    def usage_stats(request:Request,days:int=7):
+        admin(request)
+        if days not in (7,30): raise Problem('SCHEMA_INVALID','统计范围支持7天或30天')
+        return answer(request,dict(usage_overview(app.state.store,usage,days),tracking_error=app.state.usage_error))
     @app.get('/api/v1/admin/accounts')
     def account_list(request:Request):
         admin(request)
@@ -382,7 +411,9 @@ def create_app(config=None):
         with app.state.store.tx() as db:
             account_id=db.execute("SELECT id FROM accounts WHERE kind='public'").fetchone()[0]
             row=publication_for(db, account_id)
-        return calendar_body(request, row)
+        response=calendar_body(request,row)
+        request.state.subscription_account=(account_id,True)
+        return response
     @app.api_route('/c/{token}/calendar.ics',methods=['GET','HEAD'])
     def calendar(token:str,request:Request):
         digest=token_hash(token)
@@ -390,7 +421,9 @@ def create_app(config=None):
             account=db.execute("SELECT id,calendar_hash FROM accounts WHERE kind='invite' AND revoked_at IS NULL AND calendar_hash=?",(digest,)).fetchone()
             if not account or not _same(digest, account['calendar_hash']): raise Problem('NOT_FOUND','未找到日历',404)
             row=publication_for(db, account['id'])
-        return calendar_body(request, row)
+        response=calendar_body(request,row)
+        request.state.subscription_account=(account['id'],False)
+        return response
     @app.get('/login',response_class=HTMLResponse)
     @app.get('/',response_class=HTMLResponse)
     @app.get('/interests',response_class=HTMLResponse)
@@ -398,6 +431,7 @@ def create_app(config=None):
     @app.get('/apply',response_class=HTMLResponse)
     @app.get('/model',response_class=HTMLResponse)
     @app.get('/admin',response_class=HTMLResponse)
+    @app.get('/usage',response_class=HTMLResponse)
     @app.get('/candidates',response_class=HTMLResponse)
     @app.get('/runs',response_class=HTMLResponse)
     def page(request:Request):

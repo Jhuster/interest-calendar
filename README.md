@@ -129,6 +129,7 @@ BASE_URL=https://calendar.example.com ./bin/start-ecs.sh
 | Agent 接入与活动筛选规则 | [接入协议](src/app/agent-guide.md) |
 | 账户隔离、邀请与订阅 | [账户规格](docs/账户规格.md) |
 | 部署、凭据与备份恢复 | [运行指南](bin/README.md) |
+| 管理员用量概览与指标口径 | [用量统计](docs/用量统计.md) |
 | 存储保留与部署约束 | [存储与部署规格](docs/存储与部署规格.md) |
 
 运行数据保存在 `bin/data/`，包括数据库、备份和凭据，不进入 Git。产品截图保存在 `docs/images/`。
