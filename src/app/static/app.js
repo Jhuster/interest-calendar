@@ -85,6 +85,37 @@ document.querySelectorAll('[data-candidate]').forEach(card=>card.querySelectorAl
 async function resetScope(scope){const label=scope==='all'?'恢复初始状态':'清空日历数据';if(!confirm(`确认${label}？\n\n${scope==='all'?'当前这一份的兴趣配置和全部日历数据都会删除。':'当前这一份的事件、候选和发布记录都会删除，但兴趣配置会保留。'}\n\n只作用于当前登录的这一份，其他账户不受影响。此操作不可撤销。`))return;await api('/admin/reset','POST',{scope,confirmation:'RESET',state_epoch:status.state_epoch,config_version:status.config_version});notify(`${label}已完成。`);location.reload()}
 function subscriptionNote(){if(status.development&&!status.subscription_url)return '当前是本机开发预览，127.0.0.1 只能由这台电脑访问，不能复制到手机。请用固定局域网 IP 配置 BASE_URL 后再订阅。';if(status.role==='invitee')return '此地址带有订阅密钥。知道完整地址的人可以读取其中的日程、地点和来源链接，请勿公开。';return ''}
 function fillSubscribe(inputId,noteId){const input=$(inputId);if(!input)return;input.value=status.subscription_url||'';input.placeholder=status.development&&!status.subscription_url?'尚未配置局域网地址':'日历订阅地址';const note=$(noteId);if(note)note.textContent=subscriptionNote()}
+let trafficChartDays=[];
+function renderTrafficChart(days){
+trafficChartDays=days;
+const target=$('#usage-traffic-chart'),w=Math.max(600,target.clientWidth),h=260,left=60,right=w-25,top=20,bottom=215;
+const values=days.flatMap(d=>[d.page_views,d.unique_visitors]).filter(v=>v!==null),step=Math.ceil(Math.max(4,...values)/4),max=step*4;
+const x=i=>left+(right-left)*i/Math.max(1,days.length-1),y=v=>bottom-(bottom-top)*v/max;
+const compact=new Intl.NumberFormat('zh-CN',{notation:'compact',maximumFractionDigits:1});
+let svg=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="每日网站 PV 和 UV 趋势"><title>每日网站 PV 和 UV 趋势，详细数字见每日用量表</title>`;
+for(let n=0;n<=4;n++){const value=n*step,yy=y(value);svg+=`<line class="usage-chart-grid" x1="${left}" x2="${right}" y1="${yy}" y2="${yy}"/><text class="usage-chart-label" x="${left-12}" y="${yy+4}" text-anchor="end">${compact.format(value)}</text>`}
+const interval=Math.max(1,Math.ceil(days.length/7));days.forEach((d,i)=>{if(i%interval===0||i===days.length-1)svg+=`<text class="usage-chart-label" x="${x(i)}" y="${bottom+28}" text-anchor="middle">${esc(d.date.slice(5).replace('-','/'))}</text>`});
+for(const [key,label,kind] of [['page_views','PV','pv'],['unique_visitors','UV','uv']]){const points=days.map((d,i)=>({d,i,v:d[key]})).filter(p=>p.v!==null);svg+=`<path class="usage-chart-line chart-${kind}" d="${points.map((p,i)=>`${i?'L':'M'}${x(p.i)},${y(p.v)}`).join(' ')}"/>`;svg+=points.map(p=>`<circle class="usage-chart-dot chart-dot-${kind}" cx="${x(p.i)}" cy="${y(p.v)}" r="${kind==='uv'?4:3}"><title>${esc(p.d.date)} · ${label}：${p.v}</title></circle>`).join('')}
+svg+='</svg>';target.innerHTML=svg;
+}
+let usageRequest=0;
+async function loadUsage(){
+const request=++usageRequest;
+const range=$('#usage-range').value,u=await api('/admin/usage?days='+range),n=value=>value===null?'—':Number(value).toLocaleString('zh-CN');
+if(request!==usageRequest)return;
+$('#traffic-pv').textContent=n(u.traffic.page_views);$('#traffic-uv').textContent=n(u.traffic.unique_visitors);renderTrafficChart(u.daily);
+$('#traffic-note').textContent=`每日趋势 · 自 ${new Date(u.traffic.started_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})} 起采集，之前的数据不回补。UV 通过匿名浏览器标识去重，未采集日期以空白表示。清除 Cookie 或更换浏览器会视为新访客，每日 UV 相加不等于整个范围的 UV。`;
+$('#usage-period').textContent=`${u.period.start_date} 至 ${u.period.end_date} · 北京时间 · 更新于 ${new Date(u.as_of).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}`;
+const cards=[['累计账号',u.accounts.total,`含管理员；可用 ${n(u.accounts.available)} 个，已撤销 ${n(u.accounts.revoked)} 个`],['活跃账号',u.accounts.active,'登录后有操作的账号，含管理员'],['Agent 回传账号',u.agent.accounts,`近 ${u.window_days} 天有已记录批次的账号`],['成功批次',u.agent.succeeded,'按批次 ID 去重'],['失败批次',u.agent.failed,'已保存拒绝回执的批次'],['新增日程',u.calendar.created,`近 ${u.window_days} 天新建的日程`],['当前待核验',u.calendar.pending,'可用账号尚未处理的候选'],['订阅请求',u.subscriptions.requests,'公开与个人订阅的成功请求']];
+$('#usage-cards').innerHTML=cards.map(([label,value,note])=>`<article class="panel usage-card"><h2>${esc(label)}</h2><strong>${n(value)}</strong><p class="small muted">${esc(note)}</p></article>`).join('');
+const facts=(id,items)=>{$(id).innerHTML=items.map(([label,value])=>`<div><dt>${esc(label)}</dt><dd>${n(value)}</dd></div>`).join('')};
+$('#usage-last-received').textContent=u.agent.last_received_at?`最近回传：${new Date(u.agent.last_received_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}`:'尚无 Agent 回传记录';
+facts('#usage-quality',[['确认发布',u.calendar.resolutions.approve],['拒绝',u.calendar.resolutions.reject],['合并',u.calendar.resolutions.merge],['撤下',u.calendar.resolutions.withdraw],['重新打开',u.calendar.resolutions.reopen]]);
+facts('#usage-subscriptions',[['公开订阅请求',u.subscriptions.public_requests],['个人订阅请求',u.subscriptions.personal_requests],['有订阅请求的个人账号',u.subscriptions.personal_accounts],['其中：内容未变化（304）',u.subscriptions.not_modified]]);
+$('#usage-daily').innerHTML=u.daily.map(d=>`<tr><th scope="row">${esc(d.date)}</th><td>${n(d.page_views)}</td><td>${n(d.unique_visitors)}</td><td>${n(d.active_accounts)}</td><td>${n(d.batches_succeeded)}</td><td>${n(d.batches_failed)}</td><td>${n(d.events_created)}</td><td>${n(d.subscription_requests)}</td></tr>`).join('');
+$('#usage-note').textContent=`活跃与订阅统计自 ${new Date(u.tracking_started_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})} 起记录，历史不回补，按日保留 ${u.retention_days} 天。Agent 自动回传和订阅刷新不计为登录活跃。账号、批次、日程和核验操作基于当前数据库，清空或恢复数据会影响统计。网站访客仅用随机浏览器标识的哈希去重，不绑定账号。统计不记录 IP、令牌、请求地址或日历内容。`;
+$('#usage-error').hidden=!u.tracking_error;$('#usage-error').textContent=u.tracking_error?'部分用量暂未记录，展示的数据可能不完整。服务功能不受影响。':'';
+}
 async function start(){bind('#close-detail',()=>$('#detail').close());bind('#logout',async()=>{await api('/session','DELETE');location.href='/'});const loginForm=$('#login-form');if(loginForm){bind('#open-login',()=>{$('#login-error').hidden=true;$('#login-dialog').showModal();$('#token').focus()});bind('#close-login',()=>$('#login-dialog').close());loginForm.onsubmit=e=>{e.preventDefault();action(async()=>{const box=$('#login-error');box.hidden=true;try{await api('/session','POST',{token:$('#token').value})}catch(err){box.hidden=false;box.textContent=err.message;return}if(page==='/login')location.href='/';else location.reload()})};if(page==='/login')$('#login-dialog').showModal()}if(page==='/login'||page==='/apply')return
 status=await api('/status');
 if(page==='/'){interests=(await api('/interests')).items;$('#today-label').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'long'}).format(new Date());$('#publication-label').textContent=status.publish_error|| (status.data_revision>status.published_revision?'变更已保存，日历待发布':status.published_revision===0?'等待第一份日程':'订阅已处理至版本 '+status.published_revision);interests.forEach(i=>$('#interest-filter').add(new Option(i.keyword,i.id)));$('#interest-filter').onchange=()=>action(schedule);bind('#list-view',async()=>{view='list';await schedule()});bind('#month-view',async()=>{view='month';await schedule()});for(const [id,step] of [['previous-month',-1],['next-month',1]])bind('#'+id,async()=>{month=new Date(Date.UTC(Number(month.slice(0,4)),Number(month.slice(5))-1+step,1)).toISOString().slice(0,7);await schedule()});await schedule()}
@@ -99,5 +130,6 @@ if($('#retry-publish'))bind('#retry-publish',async()=>{await api('/publications/
 if($('#reset-calendar'))bind('#reset-calendar',()=>action(()=>resetScope('calendar')));
 if($('#reset-all'))bind('#reset-all',()=>action(()=>resetScope('all')));
 if($('#invite-form')){$('#invite-form').onsubmit=e=>{e.preventDefault();action(async()=>{const created=await api('/admin/invites','POST',{label:$('#invite-label').value});e.target.reset();showAccountToken(created.token,'invite');await loadAccounts();notify('账户已创建。登录令牌已显示在上方，列表里不放令牌。')})};action(loadAccounts)}
+if(page==='/usage'){await loadUsage();bind('#refresh-usage',loadUsage);$('#usage-range').onchange=()=>action(loadUsage);window.addEventListener('resize',()=>renderTrafficChart(trafficChartDays))}
 if(page==='/runs'){await runs();bind('#refresh-runs',runs)}if(page==='/candidates')await candidates()}
 action(start);
